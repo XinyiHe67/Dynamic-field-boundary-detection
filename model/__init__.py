@@ -1,10 +1,25 @@
-# 建议把 __all__ 修改为
+# 先把各子模块都 import 进来（保持你原有的）
+from . import dataset, engine, maskrcnn, train, infer, visualize, evaluation
+
+# 若希望直接从 model 顶层拿到函数，也做一层 re-export（可选但方便）
+from .evaluation import (
+    evaluate_single_image,
+    evaluate_dataset,
+    evaluate_from_checkpoint,
+)
+
 __all__ = [
-    "dataset",     # 提供 DataConfig / build_loaders / create_split_datasets / GeoPatchDataset
-    "engine",      # pick_device_and_amp / train_one_epoch / validate_one_epoch / fit_maskrcnn
-    "maskrcnn",    # build_model_with_custom_loss
-    "train",       # train(...)
-    "infer",       # predict_dataset(...)
-    "visualize",   # predict_and_save_pngs / render_side_by_side ...
+    # 模块
+    "dataset",
+    "engine",
+    "maskrcnn",
+    "train",
+    "infer",
+    "visualize",
+    "evaluation",
+    # 直接导出的评估函数（可选）
+    "evaluate_single_image",
+    "evaluate_dataset",
+    "evaluate_from_checkpoint",
 ]
 

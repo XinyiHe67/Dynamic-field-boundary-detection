@@ -8,12 +8,13 @@ from model.dataset import DataConfig, build_loaders
 from model import train as train_mod
 from model import infer as infer_mod
 from model import visualize as viz_mod  # 可视化模块
+from model import evaluation as eval_mod
 
 def parse_args():
     p = argparse.ArgumentParser()
 
     # choose your mode
-    p.add_argument("--mode", choices=["all", "train", "infer", "visualize"], default="visualize")
+    p.add_argument("--mode", choices=["all", "train", "infer", "visualize", "eval"], default="all")
 
     # dataset
     p.add_argument("--img_dir", default="./model/Dataset")
@@ -49,6 +50,12 @@ def parse_args():
     p.add_argument("--viz_mode", default="side_by_side", choices=["side_by_side", "boundary"])
     p.add_argument("--viz_limit", type=int, default=0)  # 0=不限制
     p.add_argument("--score_thresh", type=float, default=0.5)
+
+    # evaluation
+    p.add_argument("--eval_csv", default="./runs/eval_results.csv")
+    p.add_argument("--eval_score_thresh", type=float, default=0.5)
+    p.add_argument("--eval_iou_thr", type=float, default=0.5)
+    p.add_argument("--eval_boundary_tol", type=int, default=3)
 
     return p.parse_args()
 
@@ -163,6 +170,27 @@ def main():
             mode="boundary",
         )
         print(f">> Boundary 保存 {vis_info2['num_images']} 张到 {bdir}")
+
+    # ===== [4/4] Evaluation =====
+    if args.mode in ("all", "eval"):
+        # 选用与推理/可视化同一份 ckpt
+        if not ckpt_for_next:
+            raise FileNotFoundError("评估阶段未找到可用的 ckpt，请通过 --ckpt 指定或先训练。")
+
+        print("\n==== [4/4] Evaluation on test set ====")
+        df, summary = eval_mod.evaluate_from_checkpoint(
+            test_loader=test_loader,
+            ckpt_path=ckpt_for_next,
+            score_thresh=args.eval_score_thresh,
+            iou_match_thr=args.eval_iou_thr,
+            boundary_tol=args.eval_boundary_tol,
+            save_csv=args.eval_csv,
+        )
+        # 打印一个简要汇总
+        keys = ["Precision", "Recall", "F1_score", "IoU", "Dice"]
+        msg = " | ".join(f"{k}: {summary.get(k, None):.4f}" for k in keys if summary.get(k, None) is not None)
+        print(f">> Eval summary: {msg}")
+        print(f">> Per-image csv: {args.eval_csv}")
 
 
 if __name__ == "__main__":
