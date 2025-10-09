@@ -1,0 +1,9 @@
+# text files LF
+*               text=auto eol=lf
+
+# common files LF
+*.{py,sh,md,txt,yml,yaml,json,ipynb} text eol=lf
+
+# binary
+*.{png,jpg,jpeg,gif,svg,ico,tif,tiff} binary
+*.{zip,7z,rar,tar,gz}                 binary
