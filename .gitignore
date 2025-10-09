@@ -1,2 +1,5 @@
-model\checkpoints
-model\Dataset
+# 忽略所有层级的 checkpoints
+**/checkpoints/
+#（可选）忽略数据与运行产物
+model/Dataset/
+runs/
