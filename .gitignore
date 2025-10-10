@@ -4,3 +4,5 @@
 model/Dataset/
 runs/model/Mask-R-CNN-new.ipynb
 model/Mask-R-CNN-new.ipynb
+model/Target_polygon/
+runs/

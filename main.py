@@ -9,12 +9,14 @@ from model import train as train_mod
 from model import infer as infer_mod
 from model import visualize as viz_mod  # 可视化模块
 from model import evaluation as eval_mod
+from model import postprocess_from_pt_dir 
 
 def parse_args():
     p = argparse.ArgumentParser()
 
-    # choose your mode
-    p.add_argument("--mode", choices=["all", "train", "infer", "visualize", "eval"], default="all")
+    # mode 增加 post
+    p.add_argument("--mode", choices=["all", "train", "infer", "visualize", "eval", "post"], default="post")
+
 
     # dataset
     p.add_argument("--img_dir", default="./model/Dataset")
@@ -57,6 +59,15 @@ def parse_args():
     p.add_argument("--eval_iou_thr", type=float, default=0.5)
     p.add_argument("--eval_boundary_tol", type=int, default=3)
 
+    # ===== 后处理专用参数 =====
+    p.add_argument("--post_pred_dir", default="./runs/predictions", help="后处理读取的预测结果目录（.pt）")
+    p.add_argument("--cad_gpkg", default="./model/Target_polygon", help="地籍 GPKG 文件/目录/通配符")
+    p.add_argument("--post_out_dir", default="./runs/post_outputs", help="后处理输出目录.gpkg")
+    p.add_argument("--id_field", default="OBJECTID", help="地籍里匹配 polygon_id 的字段名")
+    p.add_argument("--img_root", default=None, help="若 .pt 缺少 transform/crs，从此目录找原始 .tif/.tiff 元信息")
+    p.add_argument("--mask_thresh", type=float, default=0.7)
+    p.add_argument("--small_area_m2", type=float, default=30_000_000.0)
+    
     return p.parse_args()
 
 def _auto_find_ckpt(ckpt_dir: str) -> str:
@@ -97,7 +108,7 @@ def main():
     best_ckpt_path = ""   # 供 infer/vis 使用
     latest_ckpt_path = ""
 
-    # ===== [1/3] Training =====
+    # ===== [1/5] Training =====
     if args.mode in ("all", "train") and not has_user_ckpt:
         print("\n==== [1/3] Training ====")
         best_ckpt_path, latest_ckpt_path = train_mod.train(
@@ -129,7 +140,7 @@ def main():
     if args.mode == "all" and not ckpt_for_next:
         raise FileNotFoundError("未找到可用的 ckpt 路径。请检查训练阶段是否成功保存权重，或通过 --ckpt 指定。")
 
-    # ===== [2/3] Inference =====
+    # ===== [2/5] Inference =====
     if args.mode in ("all", "infer"):
         print("\n==== [2/3] Inference & save predictions ====")
         info = infer_mod.predict_dataset(
@@ -142,7 +153,7 @@ def main():
         print(f">> Inference 完成：共保存 {info['num_items']} 个样本的预测到 {args.out_dir}")
         print(f">> 示例文件：{info['sample_paths'][:3]}")
 
-    # ===== [3/3] Visualization =====
+    # ===== [3/5] Visualization =====
     if args.mode in ("all", "visualize"):
         print("\n==== [3/3] Visualization PNGs ====")
 
@@ -171,7 +182,7 @@ def main():
         )
         print(f">> Boundary 保存 {vis_info2['num_images']} 张到 {bdir}")
 
-    # ===== [4/4] Evaluation =====
+    # ===== [4/5] Evaluation =====
     if args.mode in ("all", "eval"):
         # 选用与推理/可视化同一份 ckpt
         if not ckpt_for_next:
@@ -191,6 +202,20 @@ def main():
         msg = " | ".join(f"{k}: {summary.get(k, None):.4f}" for k in keys if summary.get(k, None) is not None)
         print(f">> Eval summary: {msg}")
         print(f">> Per-image csv: {args.eval_csv}")
+
+    # ===== [5/5] Post-processing =====
+    if args.mode in ("all", "post"):
+        os.makedirs(args.post_out_dir, exist_ok=True)
+        results = postprocess_from_pt_dir(
+            pred_dir=args.post_pred_dir,
+            cadastre_gpkg_path=args.cad_gpkg,
+            out_dir=args.post_out_dir,
+            id_field=args.id_field,
+            img_root=args.img_root,
+            mask_thresh=args.mask_thresh,
+            small_area_thresh_m2=args.small_area_m2,
+        )
+        print(f">> Post-processing 完成：共输出 {len(results)} 个地块到 {args.post_out_dir}")
 
 
 if __name__ == "__main__":

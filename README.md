@@ -88,6 +88,7 @@ pip install -U pillow matplotlib rasterio
 pip install -U shapely
 pip install -U opencv-python
 pip install -U geopandas fiona pyproj rtree
+pip install -U scikit-learn
 ~~~
 ⚠️ <mark>Please make sure that your NVIDIA GeForce driver is ≥ 550.</mark>
 
