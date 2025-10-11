@@ -13,6 +13,13 @@ from shapely.geometry import shape, Polygon, LineString
 from shapely.ops import unary_union
 from pyproj import CRS
 import fiona
+from rasterio.features import rasterize
+from rasterio.transform import from_origin
+from shapely.geometry import box
+import multiprocessing as mp
+from tqdm import tqdm
+from pathlib import Path
+import warnings 
 
 # 可选依赖：cv2
 try:
@@ -325,4 +332,92 @@ def postprocess_from_pt_dir(pred_dir: str,
         )
         results[pid] = info
         print(f"[{pid}] -> {info['gpkg']}  ({info['boundaries_layer']}, {info['small_fields_layer']})")
+            # === 并行拼接所有地块 GPKG 为一张 GeoTIFF ===
+    try:
+        print("\n>>> 并行拼接所有地块 GPKG 到单一 GeoTIFF ...")
+
+        gpkg_list = [Path(v["gpkg"]) for v in results.values() if Path(v["gpkg"]).exists()]
+        if not gpkg_list:
+            print("⚠️ 未找到可拼接的 GPKG 文件，跳过全局合并。")
+            return results
+
+        # === Step 1: 获取所有边界的总范围和CRS ===
+        sample_gdf = gpd.read_file(gpkg_list[0], layer="boundaries")
+        crs = sample_gdf.crs
+        bounds_list = [sample_gdf.total_bounds]
+
+        # 为了避免单个文件 I/O 瓶颈，我们并行提取 bounds
+        def get_bounds(path):
+            try:
+                gdf = gpd.read_file(path, layer="boundaries")
+                return gdf.total_bounds
+            except Exception:
+                return None
+
+        with mp.Pool(processes=os.cpu_count()) as pool:
+            for b in tqdm(pool.imap(get_bounds, gpkg_list), total=len(gpkg_list)):
+                if b is not None:
+                    bounds_list.append(b)
+
+        # 计算总体范围
+        bounds_array = np.array(bounds_list)
+        minx, miny = bounds_array[:, 0].min(), bounds_array[:, 1].min()
+        maxx, maxy = bounds_array[:, 2].max(), bounds_array[:, 3].max()
+        print(f"Total mosaic bounds: ({minx:.2f}, {miny:.2f}, {maxx:.2f}, {maxy:.2f})")
+
+        # === Step 2: 设置分辨率与输出影像尺寸 ===
+        res = 10  # 每像元 10 米，可按你的地块 CRS 调整
+        width = int((maxx - minx) / res)
+        height = int((maxy - miny) / res)
+        transform = from_origin(minx, maxy, res, res)
+        print(f"Output size: {width} x {height} px")
+
+        # === Step 3: 并行 rasterize ===
+        def rasterize_one(path):
+            try:
+                gdf = gpd.read_file(path, layer="boundaries")
+                if gdf.empty:
+                    return np.zeros((height, width), dtype=np.uint8)
+                shapes = [(geom, 1) for geom in gdf.geometry if geom.is_valid]
+                arr = rasterize(
+                    shapes,
+                    out_shape=(height, width),
+                    transform=transform,
+                    fill=0,
+                    dtype="uint8"
+                )
+                return arr
+            except Exception:
+                return np.zeros((height, width), dtype=np.uint8)
+
+        print(f"Using {os.cpu_count()} CPU cores for parallel rasterization...")
+
+        with mp.Pool(processes=os.cpu_count()) as pool:
+            partials = list(tqdm(pool.imap(rasterize_one, gpkg_list), total=len(gpkg_list)))
+
+        # === Step 4: 合并所有块（取最大值）===
+        print("Merging partial rasters...")
+        mosaic = np.maximum.reduce(partials)
+
+        # === Step 5: 写出 GeoTIFF ===
+        merged_tif = Path(out_dir) / "merged_all_fields.tif"
+        with rasterio.open(
+            merged_tif, "w",
+            driver="GTiff",
+            height=height,
+            width=width,
+            count=1,
+            dtype="uint8",
+            crs=crs,
+            transform=transform,
+            compress="lzw",
+            BIGTIFF="IF_SAFER"
+        ) as dst:
+            dst.write(mosaic, 1)
+
+        print(f"✅ 全局拼接完成，输出文件：{merged_tif}")
+
+    except Exception as e:
+        print(f"⚠️ 拼接 TIF 失败：{e}")
+
     return results
