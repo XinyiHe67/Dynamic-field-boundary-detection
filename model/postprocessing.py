@@ -370,25 +370,6 @@ def postprocess_from_pt_dir(pred_dir: str,
 
         print(f"合并完成，共 {len(merged_gdf)} 个要素。")
 
-        # === Step 4: 可选 dissolve（生成整体边界） ===
-        try:
-            merged_union = unary_union(merged_gdf.geometry)
-            merged_union_gdf = gpd.GeoDataFrame(geometry=[merged_union], crs=merged_gdf.crs)
-        except Exception as e:
-            print(f"⚠️ dissolve 失败：{e}")
-            merged_union_gdf = gpd.GeoDataFrame()
-
-        # === Step 5: 输出为新的 GPKG ===
-        out_merged_gpkg = Path(out_dir) / "merged_all_fields.gpkg"
-        if out_merged_gpkg.exists():
-            out_merged_gpkg.unlink()
-
-        merged_gdf.to_file(out_merged_gpkg, layer="boundaries_all", driver="GPKG")
-        if not merged_union_gdf.empty:
-            merged_union_gdf.to_file(out_merged_gpkg, layer="merged_union", driver="GPKG")
-
-        print(f"全局 GPKG 拼接完成：{out_merged_gpkg}")
-
     except Exception as e:
         print(f"拼接 GPKG 失败：{e}")
 
