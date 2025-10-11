@@ -6,20 +6,20 @@ import torch
 import geopandas as gpd
 import pandas as pd
 import rasterio
+import multiprocessing as mp
+import fiona
+import warnings
+from tqdm import tqdm
+from pathlib import Path
 from rasterio import features as rio_features
 from rasterio.merge import merge as rio_merge
 from rasterio.transform import Affine
-from shapely.geometry import shape, Polygon, LineString
+from shapely.geometry import shape, Polygon, LineString, MultiPolygon
 from shapely.ops import unary_union
 from pyproj import CRS
-import fiona
 from rasterio.features import rasterize
 from rasterio.transform import from_origin
 from shapely.geometry import box
-import multiprocessing as mp
-from tqdm import tqdm
-from pathlib import Path
-import warnings 
 
 # 可选依赖：cv2
 try:
@@ -332,92 +332,64 @@ def postprocess_from_pt_dir(pred_dir: str,
         )
         results[pid] = info
         print(f"[{pid}] -> {info['gpkg']}  ({info['boundaries_layer']}, {info['small_fields_layer']})")
-            # === 并行拼接所有地块 GPKG 为一张 GeoTIFF ===
+
+    # === 并行拼接所有地块 GPKG 为一个总 GPKG ===
     try:
-        print("\n>>> 并行拼接所有地块 GPKG 到单一 GeoTIFF ...")
+        print("\n>>> 并行拼接所有地块 GPKG 到单一 GPKG ...")
 
         gpkg_list = [Path(v["gpkg"]) for v in results.values() if Path(v["gpkg"]).exists()]
         if not gpkg_list:
-            print("⚠️ 未找到可拼接的 GPKG 文件，跳过全局合并。")
+            print("未找到可拼接的 GPKG 文件，跳过全局合并。")
             return results
 
-        # === Step 1: 获取所有边界的总范围和CRS ===
-        sample_gdf = gpd.read_file(gpkg_list[0], layer="boundaries")
-        crs = sample_gdf.crs
-        bounds_list = [sample_gdf.total_bounds]
-
-        # 为了避免单个文件 I/O 瓶颈，我们并行提取 bounds
-        def get_bounds(path):
+        # === Step 1: 定义读取函数 ===
+        def read_one_gpkg(path):
             try:
                 gdf = gpd.read_file(path, layer="boundaries")
-                return gdf.total_bounds
-            except Exception:
-                return None
+                gdf["source_pid"] = path.stem
+                return gdf
+            except Exception as e:
+                print(f"⚠️ 跳过 {path.name}: {e}")
+                return gpd.GeoDataFrame(columns=["geometry", "source_pid"])
 
+        # === Step 2: 并行读取所有 GPKG ===
+        print(f"使用 {os.cpu_count()} 个 CPU 核心并行读取 {len(gpkg_list)} 个 GPKG ...")
         with mp.Pool(processes=os.cpu_count()) as pool:
-            for b in tqdm(pool.imap(get_bounds, gpkg_list), total=len(gpkg_list)):
-                if b is not None:
-                    bounds_list.append(b)
+            gdfs = list(tqdm(pool.imap(read_one_gpkg, gpkg_list), total=len(gpkg_list)))
 
-        # 计算总体范围
-        bounds_array = np.array(bounds_list)
-        minx, miny = bounds_array[:, 0].min(), bounds_array[:, 1].min()
-        maxx, maxy = bounds_array[:, 2].max(), bounds_array[:, 3].max()
-        print(f"Total mosaic bounds: ({minx:.2f}, {miny:.2f}, {maxx:.2f}, {maxy:.2f})")
+        gdfs = [g for g in gdfs if not g.empty]
+        if not gdfs:
+            print("⚠️ 所有 GPKG 均为空，跳过拼接。")
+            return results
 
-        # === Step 2: 设置分辨率与输出影像尺寸 ===
-        res = 10  # 每像元 10 米，可按你的地块 CRS 调整
-        width = int((maxx - minx) / res)
-        height = int((maxy - miny) / res)
-        transform = from_origin(minx, maxy, res, res)
-        print(f"Output size: {width} x {height} px")
+        # === Step 3: 合并所有 GeoDataFrame ===
+        merged_gdf = gpd.GeoDataFrame(
+            pd.concat(gdfs, ignore_index=True),
+            crs=gdfs[0].crs
+        )
 
-        # === Step 3: 并行 rasterize ===
-        def rasterize_one(path):
-            try:
-                gdf = gpd.read_file(path, layer="boundaries")
-                if gdf.empty:
-                    return np.zeros((height, width), dtype=np.uint8)
-                shapes = [(geom, 1) for geom in gdf.geometry if geom.is_valid]
-                arr = rasterize(
-                    shapes,
-                    out_shape=(height, width),
-                    transform=transform,
-                    fill=0,
-                    dtype="uint8"
-                )
-                return arr
-            except Exception:
-                return np.zeros((height, width), dtype=np.uint8)
+        print(f"合并完成，共 {len(merged_gdf)} 个要素。")
 
-        print(f"Using {os.cpu_count()} CPU cores for parallel rasterization...")
+        # === Step 4: 可选 dissolve（生成整体边界） ===
+        try:
+            merged_union = unary_union(merged_gdf.geometry)
+            merged_union_gdf = gpd.GeoDataFrame(geometry=[merged_union], crs=merged_gdf.crs)
+        except Exception as e:
+            print(f"⚠️ dissolve 失败：{e}")
+            merged_union_gdf = gpd.GeoDataFrame()
 
-        with mp.Pool(processes=os.cpu_count()) as pool:
-            partials = list(tqdm(pool.imap(rasterize_one, gpkg_list), total=len(gpkg_list)))
+        # === Step 5: 输出为新的 GPKG ===
+        out_merged_gpkg = Path(out_dir) / "merged_all_fields.gpkg"
+        if out_merged_gpkg.exists():
+            out_merged_gpkg.unlink()
 
-        # === Step 4: 合并所有块（取最大值）===
-        print("Merging partial rasters...")
-        mosaic = np.maximum.reduce(partials)
+        merged_gdf.to_file(out_merged_gpkg, layer="boundaries_all", driver="GPKG")
+        if not merged_union_gdf.empty:
+            merged_union_gdf.to_file(out_merged_gpkg, layer="merged_union", driver="GPKG")
 
-        # === Step 5: 写出 GeoTIFF ===
-        merged_tif = Path(out_dir) / "merged_all_fields.tif"
-        with rasterio.open(
-            merged_tif, "w",
-            driver="GTiff",
-            height=height,
-            width=width,
-            count=1,
-            dtype="uint8",
-            crs=crs,
-            transform=transform,
-            compress="lzw",
-            BIGTIFF="IF_SAFER"
-        ) as dst:
-            dst.write(mosaic, 1)
-
-        print(f"✅ 全局拼接完成，输出文件：{merged_tif}")
+        print(f"全局 GPKG 拼接完成：{out_merged_gpkg}")
 
     except Exception as e:
-        print(f"⚠️ 拼接 TIF 失败：{e}")
+        print(f"拼接 GPKG 失败：{e}")
 
     return results
