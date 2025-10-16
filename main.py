@@ -33,7 +33,7 @@ def parse_args():
 
     # ===== GEE 专用参数 =====
     p.add_argument("--gee_key_path",
-    default="D:/Boundary_detection/model/cs88-468908-d6ce3af55bb8.json")
+    default="./model/cs88-468908-d6ce3af55bb8.json")
     p.add_argument("--gee_service_account", default="")
     p.add_argument("--gee_project_id", default="")
     p.add_argument("--gee_cad_asset",
