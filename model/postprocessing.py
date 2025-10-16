@@ -1,328 +1,483 @@
+# model/postprocessing.py
 from __future__ import annotations
-import os, re, glob
+import os, re, glob, json, warnings
 from typing import Dict, List, Tuple, Optional
+
 import numpy as np
+import pandas as pd
 import torch
 import geopandas as gpd
-import pandas as pd
 import rasterio
 from rasterio import features as rio_features
-from rasterio.merge import merge as rio_merge
-from rasterio.transform import Affine
-from shapely.geometry import shape, Polygon, LineString
-from shapely.ops import unary_union
-from pyproj import CRS
-import fiona
-
-# 可选依赖：cv2
-try:
-    import cv2
-except Exception:
-    cv2 = None
-
-# 允许 torch 反序列化某些类型（你自己的 .pt）
-from torch.serialization import add_safe_globals
 from rasterio.crs import CRS as RioCRS
+from shapely.geometry import shape
+from pyproj import CRS
 from affine import Affine as _Affine
+
+# 兼容 torch 安全反序列化（.pt 里常见 transform/crs）
+from torch.serialization import add_safe_globals
 add_safe_globals([RioCRS, _Affine])
 
-# --------------------------
-# Helper functions
-# --------------------------
-# 顶部 helper 区域里：把单条 _ID_REGEX 与 extract_* 换成下面这段
-_PATTERNS = [
-    re.compile(r"patch_(\d+)_S", re.IGNORECASE),          # patch_1781869_S.pt
-    re.compile(r"patch_(\d+)(?:\.|_|$)", re.IGNORECASE),  # patch_1781869.pt / patch_1781869_xxx.pt
-    re.compile(r"poly_(\d+)", re.IGNORECASE),             # poly_1781869_*.pt
-    re.compile(r"(\d{6,})"),                              # 兜底：连续6位以上数字
-]
+# OpenCV（可选）用于轻微腐蚀
+try:
+    import cv2
+    _HAS_CV2 = True
+except Exception:
+    _HAS_CV2 = False
+    warnings.warn("[WARN] OpenCV 未安装，无法形态学腐蚀；相邻实例更容易粘连。")
 
-def extract_polygon_id_from_name(name: str) -> str:
-    base = os.path.basename(name)
-    for pat in _PATTERNS:
-        m = pat.search(base)
-        if m:
-            return m.group(1)
-    return "unknown"
+# ----------------------------
+# 小工具函数
+# ----------------------------
+def _extract_polygon_id_from_name(pt_path: str) -> Optional[str]:
+    """从文件名里猜 polygon_id，例如 pred_polygon_12345.pt -> 12345"""
+    stem = os.path.splitext(os.path.basename(pt_path))[0]
+    m = re.search(r'(\d{5,})', stem)  # 默认找 >=5 位数字
+    return m.group(1) if m else None
 
-def load_meta_from_tif(tif_path: str) -> Dict:
-    with rasterio.open(tif_path) as src:
-        return {"transform": src.transform, "crs": src.crs, "path": tif_path}
+def _load_meta_from_tif_guess(pred_path: str, img_root: str) -> Dict:
+    """
+    若预测缺少 meta，则在 IMG_ROOT 下用“同名 .tif/.tiff”回填 transform/crs。
+    例如 pred_path = /runs/predictions/patch_123.pt -> 在 img_root 下寻找 patch_123.tif/.tiff
+    """
+    stem = os.path.splitext(os.path.basename(pred_path))[0]
+    for ext in (".tif", ".tiff"):
+        guess = os.path.join(img_root, f"{stem}{ext}")
+        if os.path.exists(guess):
+            with rasterio.open(guess) as src:
+                return {"transform": src.transform, "crs": src.crs, "path": guess}
+    raise FileNotFoundError(f"[Meta] 未在 {img_root} 下为 {pred_path} 找到同名 .tif/.tiff")
 
-def mask_logits_to_binary(masks, thresh: float = 0.5) -> np.ndarray:
-    if isinstance(masks, np.ndarray):
-        arr = torch.from_numpy(masks)
-    else:
-        arr = masks
-
+def _mask_logits_to_binary(masks, thresh: float = 0.5) -> np.ndarray:
+    """支持 logits 或 [0,1] 概率；输出 [N,H,W] uint8(0/1)。"""
+    arr = torch.from_numpy(masks) if isinstance(masks, np.ndarray) else masks
     if arr.ndim == 4 and arr.shape[1] == 1:
         arr = arr[:, 0]
-
     arr = arr.float()
-    if (arr.min() < 0) or (arr.max() > 1.0):
-        probs = torch.sigmoid(arr)
-    else:
-        probs = arr
+    probs = torch.sigmoid(arr) if (arr.min() < 0 or arr.max() > 1.0) else arr
+    return (probs >= thresh).to(torch.uint8).cpu().numpy()
 
-    binm = (probs >= thresh).to(torch.uint8).cpu().numpy()
-    return binm
+def _erode_if_needed(binary: np.ndarray, iters: int = 1) -> np.ndarray:
+    if not _HAS_CV2 or iters <= 0:
+        return binary
+    kernel = np.ones((3,3), np.uint8)
+    return cv2.erode(binary, kernel, iterations=iters)
 
-def vectorize_binary_mask(bin_mask: np.ndarray, transform: Affine, crs) -> gpd.GeoDataFrame:
-    geoms = []
-    for geom, val in rio_features.shapes(bin_mask.astype(np.uint8), transform=transform):
+def _vectorize_single_mask(mask01: np.ndarray, transform, min_pixels=0,
+                           simplify_ratio: float = 0.0, hw: Optional[Tuple[int,int]] = None):
+    """把单个二值掩膜矢量化为 polygon 列表；像素面积过滤 + 顶点简化。"""
+    H, W = mask01.shape
+    polys = []
+    for geom, val in rio_features.shapes(mask01.astype(np.uint8), transform=transform):
         if val != 1:
             continue
-        shp = shape(geom).buffer(0)
-        if not shp.is_empty:
-            geoms.append(shp)
-    return gpd.GeoDataFrame(geometry=geoms, crs=crs) if geoms else gpd.GeoDataFrame(geometry=[], crs=crs)
+        poly = shape(geom)
+        if min_pixels > 0 and poly.area < min_pixels:
+            continue
+        if simplify_ratio and simplify_ratio > 0:
+            diag = (H**2 + W**2) ** 0.5
+            poly = poly.simplify(diag * simplify_ratio, preserve_topology=True)
+        if not poly.is_empty:
+            polys.append(poly)
+    return polys
 
-def ensure_proj_meters(gdf: gpd.GeoDataFrame) -> gpd.GeoDataFrame:
-    if gdf.crs is None:
-        raise ValueError("GeoDataFrame has no CRS.")
-    crs = CRS.from_user_input(gdf.crs)
-    if crs.is_projected:
-        return gdf
-    c = gdf.unary_union.centroid
-    lon, lat = float(c.x), float(c.y)
-    zone = int((lon + 180) // 6) + 1
-    epsg = 32600 + zone if lat >= 0 else 32700 + zone
-    return gdf.to_crs(epsg)
+def masks_non_overlapping(binm: np.ndarray, scores: np.ndarray) -> np.ndarray:
+    """实例间去重叠：高分优先；同分按索引靠前优先。"""
+    N, H, W = binm.shape
+    sc = np.nan_to_num(scores, nan=0.0).astype(np.float32)
+    score_stack = sc[:, None, None] * binm.astype(np.float32)
+    winner_idx = np.argmax(score_stack, axis=0)  # [H,W]
+    winner_val = np.take_along_axis(score_stack, winner_idx[None, ...], axis=0)[0]
+    out = np.zeros_like(binm, dtype=np.uint8)
+    for i in range(N):
+        out[i] = ((winner_idx == i) & (binm[i] == 1) & (winner_val > 0)).astype(np.uint8)
+    return out
 
-# --------------------------
-# Load the data
-# --------------------------
-def load_cadastre_any(path_or_dir: str, layer: Optional[str] = None) -> gpd.GeoDataFrame:
-    if os.path.isdir(path_or_dir):
-        paths = sorted(glob.glob(os.path.join(path_or_dir, "*.gpkg")))
+def _ensure_gpkg_path(base_dir: str, polygon_id: str) -> str:
+    return os.path.join(base_dir, f"{polygon_id}.gpkg")
+
+def _load_cadastre(source: str, layer: Optional[str], id_field: str) -> gpd.GeoDataFrame:
+    """source 可为 .gpkg 或目录（批量 .gpkg）。"""
+    if os.path.isdir(source):
+        paths = sorted(glob.glob(os.path.join(source, "*.gpkg")))
+        if not paths:
+            raise FileNotFoundError(f"[Cadastre] 目录 {source} 下未找到 .gpkg")
+        gdfs = []
+        for p in paths:
+            g = gpd.read_file(p) if layer is None else gpd.read_file(p, layer=layer)
+            gdfs.append(g)
+        cad = gpd.GeoDataFrame(pd.concat(gdfs, ignore_index=True), crs=gdfs[0].crs)
     else:
-        if any(ch in path_or_dir for ch in ["*", "?", "["]):
-            paths = sorted(glob.glob(path_or_dir))
-        else:
-            paths = [path_or_dir]
+        cad = gpd.read_file(source) if layer is None else gpd.read_file(source, layer=layer)
+    if id_field not in cad.columns:
+        raise ValueError(f"[Cadastre] 缺少 ID 字段 {id_field}；可选列：{list(cad.columns)}")
+    cad = cad[[id_field, cad.geometry.name]].dropna(subset=[cad.geometry.name]).reset_index(drop=True)
+    cad["_id_str_"] = cad[id_field].astype(str)
+    return cad.set_index("_id_str_", drop=False)
 
-    if not paths:
-        raise RuntimeError(f"No GPKG found from: {path_or_dir}")
+# ---- 关键：统一/还原 meta 的 crs/transform ----
+def _normalize_meta(meta: dict):
+    """
+    把 meta 里的 crs/transform 统一为对象类型：
+    - crs: 任意 pyproj 可识别输入（EPSG 字符串/WKT/对象）
+    - transform: 支持 Affine 或 6/9 元 tuple
+    """
+    out_crs = None
+    transform = None
 
-    frames = []
-    base_crs = None
-    for p in paths:
-        lyr = layer
-        if lyr is None:
-            layers = fiona.listlayers(p)
-            if not layers:
-                continue
-            lyr = layers[0]
-        gdf = gpd.read_file(p, layer=lyr)
-        if gdf.empty:
-            continue
-        if base_crs is None:
-            base_crs = gdf.crs
-        elif str(gdf.crs) != str(base_crs):
-            gdf = gdf.to_crs(base_crs)
-        frames.append(gdf)
+    # CRS
+    crs_in = meta.get("crs", None)
+    if crs_in is not None:
+        try:
+            out_crs = CRS.from_user_input(crs_in)
+        except Exception:
+            out_crs = None
 
-    if not frames:
-        raise RuntimeError(f"No features read from: {paths}")
+    # Transform
+    tfm_in = meta.get("transform", None)
+    if isinstance(tfm_in, _Affine):
+        transform = tfm_in
+    elif isinstance(tfm_in, (tuple, list)):
+        try:
+            transform = _Affine.from_gdal(*tfm_in) if len(tfm_in) == 6 else _Affine(*tfm_in)
+        except Exception:
+            transform = None
 
-    cad = pd.concat(frames, ignore_index=True)
-    cad = gpd.GeoDataFrame(cad, geometry="geometry", crs=base_crs)
-    return cad
+    return {"crs": out_crs, "transform": transform}
 
-def load_buckets_from_pt_dir(pred_dir: str, img_root: Optional[str], mask_thresh: float) -> Dict[str, List[Tuple[np.ndarray, Affine, Dict]]]:
-    files = [os.path.join(pred_dir, f) for f in os.listdir(pred_dir) if f.endswith(".pt")]
-    files.sort()
-    if not files:
-        raise RuntimeError(f"No .pt files found in {pred_dir}")
+def _load_prediction_one(path: str, img_root: Optional[str]):
+    """
+    统一加载单个预测结果，支持 .pt 和 .npz：
+      - .pt: torch.load，优先取 pred['meta']；不全则从 img_root 下同名 .tif 回填
+      - .npz: 同名 .meta.json 中取 meta；不全同上回填
+    返回: (pred, transform(Affine), out_crs(CRS), polygon_id(str|None))
+    """
+    ext = os.path.splitext(path)[1].lower()
 
-    buckets: Dict[str, List[Tuple[np.ndarray, Affine, Dict]]] = {}
-    for fp in files:
-        obj = torch.load(fp, map_location="cpu")
+    if ext == ".pt":
+        obj = torch.load(path, map_location="cpu", weights_only=False)
         pred = obj["pred"] if isinstance(obj, dict) and "pred" in obj else obj
-        masks = pred.get("masks", torch.empty(0))
-        if isinstance(masks, torch.Tensor) and masks.numel() == 0:
-            continue
+        meta = pred.get("meta", None) if isinstance(pred, dict) else None
+    else:  # .npz
+        data = np.load(path)
+        pred = {
+            "boxes":  data.get("boxes"),
+            "labels": data.get("labels"),
+            "scores": data.get("scores"),
+            "masks":  data.get("masks"),
+            "image_id": int(data.get("image_id")) if data.get("image_id") is not None else -1,
+        }
+        meta_path = path.replace(".npz", ".meta.json")
+        if not os.path.exists(meta_path):
+            raise FileNotFoundError(f"[Meta] 找不到 {os.path.basename(meta_path)}")
+        with open(meta_path, "r", encoding="utf-8") as f:
+            j = json.load(f)
+        meta = j.get("meta", None)
 
-        # polygon_id
-        if isinstance(obj, dict) and ("polygon_id" in obj or ("meta" in obj and obj["meta"] and "polygon_id" in obj["meta"])):
-            pid = str(obj.get("polygon_id", obj.get("meta", {}).get("polygon_id", "unknown")))
-        else:
-            pid = extract_polygon_id_from_name(fp)
+    # 还原/规范化 meta
+    transform = None
+    out_crs = None
+    if isinstance(meta, dict):
+        nm = _normalize_meta(meta)
+        transform = nm["transform"]
+        out_crs = nm["crs"]
 
-        # meta
-        if isinstance(obj, dict) and "meta" in obj and obj["meta"] and ("transform" in obj["meta"] and "crs" in obj["meta"]):
-            meta = obj["meta"]
-        else:
-            if img_root is None:
-                raise RuntimeError(f"{fp} lacks meta; set IMG_ROOT to recover .tif meta.")
-            stem = os.path.splitext(os.path.basename(fp))[0]
-            tif_guess = os.path.join(img_root, f"{stem}.tif")
-            if not os.path.exists(tif_guess):
-                tif_guess = os.path.join(img_root, f"{stem}.tiff")
-                if not os.path.exists(tif_guess):
-                    raise FileNotFoundError(f"Image for {fp} not found under {img_root} (tried .tif/.tiff)")
-            meta = load_meta_from_tif(tif_guess)
-            meta["polygon_id"] = pid
+    # 缺少就从 img_root 回填
+    if transform is None or out_crs is None:
+        if img_root is None:
+            raise RuntimeError(f"[Meta] {os.path.basename(path)} 缺少 transform/crs，且未提供 IMG_ROOT 回填 .tif")
+        m2 = _load_meta_from_tif_guess(path, img_root)
+        transform = m2["transform"]
+        out_crs = CRS.from_user_input(m2["crs"]) if not isinstance(m2["crs"], CRS) else m2["crs"]
 
-        binm = mask_logits_to_binary(masks, thresh=mask_thresh)
-        if binm.size == 0:
-            continue
-        patch_mask = binm.max(axis=0).astype(np.uint8)
-        buckets.setdefault(pid, []).append((patch_mask, meta["transform"], {"crs": meta["crs"], "path": meta.get("path", None)}))
+    # 取 polygon_id
+    polygon_id = None
+    if isinstance(pred, dict):
+        polygon_id = pred.get("polygon_id") or ((pred.get("meta") or {}).get("polygon_id"))
+    if polygon_id is None:
+        polygon_id = _extract_polygon_id_from_name(path)
+    polygon_id = str(polygon_id) if polygon_id is not None else None
 
-    return buckets
+    return pred, transform, out_crs, polygon_id
 
-def mosaic_binary_masks(masks_with_meta: List[Tuple[np.ndarray, Affine, Dict]]):
-    if len(masks_with_meta) == 1:
-        m, tr, md = masks_with_meta[0]
-        return m, tr, CRS.from_user_input(md["crs"])
-    srcs = []
-    try:
-        for arr, tr, md in masks_with_meta:
-            H, W = arr.shape
-            profile = {"driver":"GTiff","height":H,"width":W,"count":1,"dtype":"uint8","transform":tr,"crs":md["crs"]}
-            mem = rasterio.io.MemoryFile(); ds = mem.open(**profile); ds.write(arr, 1)
-            srcs.append((mem, ds))
-        datasets = [ds for _, ds in srcs]
-        merged, out_tr = rio_merge(datasets, method="max")
-        out = merged[0].astype(np.uint8)
-        out_crs = datasets[0].crs
-        return out, out_tr, CRS.from_user_input(out_crs)
-    finally:
-        for mem, ds in srcs:
-            ds.close(); mem.close()
-
-# --------------------------
-# 形态学拆分
-# --------------------------
-def split_touching_components(binary_mask: np.ndarray,
-                              erode_px: int = 3,
-                              min_area_px: int = 120,
-                              connectivity: int = 4,
-                              open_iter: int = 1):
-    if cv2 is None:
-        raise ImportError("cv2 not available. Install opencv-python.")
-    m = (binary_mask.astype(np.uint8) > 0).astype(np.uint8)
-    kernel = np.ones((3, 3), np.uint8)
-    if open_iter > 0:
-        m = cv2.morphologyEx(m, cv2.MORPH_OPEN, kernel, iterations=open_iter)
-    m_erode = cv2.erode(m, kernel, iterations=erode_px) if erode_px > 0 else m
-    conn = 4 if connectivity == 4 else 8
-    num, labels, stats, _ = cv2.connectedComponentsWithStats(m_erode, connectivity=conn)
-    comps = []
-    for cid in range(1, num):
-        area = stats[cid, cv2.CC_STAT_AREA]
-        if area < min_area_px:
-            continue
-        comp = (labels == cid).astype(np.uint8)
-        if erode_px > 0:
-            comp = cv2.dilate(comp, kernel, iterations=erode_px)
-        comps.append(comp)
-    return comps
-
-# --------------------------
-# 裁剪 & 导出
-# --------------------------
-def clip_pred_by_cadastre(pred_mask: np.ndarray,
-                          transform: Affine,
-                          crs: CRS,
-                          cadastre_gdf: gpd.GeoDataFrame,
-                          poly_id: str,
-                          id_field: str,
-                          *,
-                          erode_px: int = 3,
-                          min_area_px: int = 100,
-                          connectivity: int = 4):
-    cad = cadastre_gdf
-    if cad.crs is None:
-        raise ValueError("Cadastre GPKG has no CRS.")
-    if str(cad.crs) != str(crs):
-        cad = cad.to_crs(crs)
-
-    row = cad.loc[cad[id_field].astype(str) == str(poly_id)]
-    if row.empty:
-        raise KeyError(f"poly_id={poly_id} not found in cadastre (field={id_field}).")
-    target_poly: Polygon = row.geometry.values[0]
-
-    components = split_touching_components(
-        pred_mask, erode_px=erode_px, min_area_px=min_area_px, connectivity=connectivity
-    )
-
-    geoms = []
-    for comp in components:
-        for geom, val in rio_features.shapes(
-            comp.astype(np.uint8),
-            mask=comp.astype(bool),
-            transform=transform
-        ):
-            if int(val) == 1:
-                shp = shape(geom).buffer(0)
-                if not shp.is_empty:
-                    geoms.append(shp)
-
-    if not geoms:
-        return gpd.GeoDataFrame(geometry=[], crs=crs), target_poly
-
-    pred_gdf = gpd.GeoDataFrame(geometry=geoms, crs=crs)
-    target_gdf = gpd.GeoDataFrame(geometry=[target_poly], crs=crs)
-    pred_clip = gpd.overlay(pred_gdf, target_gdf, how="intersection")
-    return pred_clip, target_poly
-
-def export_outputs_for_poly(out_dir: str,
-                            poly_id: str,
-                            pred_polys: gpd.GeoDataFrame,
-                            target_poly: Polygon,
-                            small_area_thresh_m2: float,
-                            gpkg_path: Optional[str] = None):
+# ----------------------------
+# 核心处理：预测 → 多个 GPKG（每个 polygon_id 一个，含 fields/boundaries 两图层）
+# ----------------------------
+def postprocess_predictions_to_gpkg(
+    pred_dir: str,
+    cad_gdf: gpd.GeoDataFrame,
+    out_dir: str,
+    id_field: str,
+    img_root: Optional[str],
+    mask_thresh: float,
+    erode_iter: int,
+    min_pixels: int,
+    simplify_ratio: float,
+    score_thresh: float,
+) -> bool:
     os.makedirs(out_dir, exist_ok=True)
-    if pred_polys.crs is None:
-        raise ValueError("pred_polys has no CRS.")
-    pred_proj = ensure_proj_meters(pred_polys)
-    pred_proj["area_m2"] = pred_proj.geometry.area
-    smalls = pred_proj.loc[pred_proj["area_m2"] <= small_area_thresh_m2].copy().drop(columns=["area_m2"])
-    smalls["poly_id"] = poly_id
-    smalls = smalls.to_crs(pred_polys.crs)
+    records_fields, records_bounds = [], []
 
-    tgt_proj = ensure_proj_meters(gpd.GeoDataFrame(geometry=[target_poly], crs=pred_polys.crs))
-    lines = [tgt_proj.geometry.values[0].boundary] + [g.boundary for g in pred_proj.geometry]
-    lines_union = unary_union(lines)
-    line_geoms = [lines_union] if isinstance(lines_union, LineString) else list(getattr(lines_union, "geoms", []))
-    lines_gdf = gpd.GeoDataFrame({"poly_id": [poly_id]*len(line_geoms)}, geometry=line_geoms, crs=pred_proj.crs).to_crs(pred_polys.crs)
+    # 同时收集 .pt 和 .npz
+    files = sorted([
+        os.path.join(pred_dir, f) for f in os.listdir(pred_dir)
+        if f.lower().endswith(".pt") or f.lower().endswith(".npz")
+    ])
+    if not files:
+        raise RuntimeError(f"[Pred] {pred_dir} 下未找到 .pt/.npz 文件")
 
-    if gpkg_path is None:
-        gpkg_path = os.path.join(out_dir, f"poly_{poly_id}.gpkg")
-    if os.path.exists(gpkg_path):
-        os.remove(gpkg_path)
-    lines_gdf.to_file(gpkg_path, layer="boundaries_all", driver="GPKG")
-    smalls.to_file(gpkg_path, layer="small_fields", driver="GPKG")
-    return {"gpkg": gpkg_path, "boundaries_layer": "boundaries_all", "small_fields_layer": "small_fields"}
+    out_crs = None              # 用第一个样本的 CRS
+    cad_reproj_done = False     # cad_gdf 只重投影一次
 
-# --------------------------
-# 顶层管道
-# --------------------------
-def postprocess_from_pt_dir(pred_dir: str,
-                            cadastre_gpkg_path: str,
-                            out_dir: str,
-                            id_field: str,
-                            img_root: Optional[str],
-                            mask_thresh: float,
-                            small_area_thresh_m2: float) -> Dict[str, Dict[str, str]]:
-    cad = load_cadastre_any(cadastre_gpkg_path, layer=None)
-    buckets = load_buckets_from_pt_dir(pred_dir, img_root=img_root, mask_thresh=mask_thresh)
+    for pi, path in enumerate(files, 1):
+        # 统一加载一个预测（含 meta 还原/回填）
+        pred, transform, this_crs, polygon_id = _load_prediction_one(path, img_root)
 
-    results: Dict[str, Dict[str, str]] = {}
-    for pid, items in buckets.items():
-        merged_mask, merged_tr, merged_crs = mosaic_binary_masks(items)
-        pred_polys, target_poly = clip_pred_by_cadastre(
-            merged_mask, merged_tr, merged_crs, cad, poly_id=pid, id_field=id_field
-        )
-        if pred_polys.empty:
-            print(f"[{pid}] empty after clipping.")
+        # 第一次拿到预测 CRS：把 cad_gdf 重投影到预测 CRS，避免 CRS 不一致导致相交为空
+        if out_crs is None:
+            out_crs = this_crs
+            if cad_gdf.crs is not None and CRS.from_user_input(cad_gdf.crs) != CRS.from_user_input(out_crs):
+                cad_gdf = cad_gdf.to_crs(out_crs)
+                cad_reproj_done = True
+            print(f"[INFO] 统一 cadastre CRS 到预测 CRS：{out_crs}（是否重投影: {cad_reproj_done}）")
+
+        # 只打印前 3 个样本的调试信息
+        if pi <= 3:
+            print(f"[DBG] {os.path.basename(path)} | poly={polygon_id} | cad_crs={cad_gdf.crs} | pred_crs={out_crs} | tfm={type(transform)}")
+
+        if polygon_id is None:
+            print(f"[Warn] {os.path.basename(path)}: 无法确定 polygon_id，跳过")
             continue
-        info = export_outputs_for_poly(
-            out_dir=out_dir, poly_id=pid, pred_polys=pred_polys,
-            target_poly=target_poly, small_area_thresh_m2=small_area_thresh_m2
-        )
-        results[pid] = info
-        print(f"[{pid}] -> {info['gpkg']}  ({info['boundaries_layer']}, {info['small_fields_layer']})")
-    return results
+
+        # 取 masks / scores
+        masks = pred.get("masks", torch.empty(0))
+        if (isinstance(masks, torch.Tensor) and masks.numel() == 0) or \
+           (isinstance(masks, np.ndarray) and masks.size == 0):
+            print(f"[Skip] {os.path.basename(path)}: 无 masks")
+            continue
+
+        scores = None
+        if isinstance(pred, dict) and "scores" in pred:
+            s = pred["scores"]
+            scores = s.detach().cpu().numpy() if isinstance(s, torch.Tensor) else s
+        N = (masks.shape[0] if isinstance(masks, (np.ndarray, torch.Tensor)) else 0)
+        if scores is None or len(scores) != N:
+            scores = np.full((N,), np.nan, dtype=float)
+
+        # 找目标 cadastre 几何
+        if polygon_id not in cad_gdf.index:
+            print(f"[Warn] {os.path.basename(path)}: 在 cadastre 中找不到 ID={polygon_id}，跳过")
+            continue
+        target_geom = cad_gdf.loc[polygon_id, cad_gdf.geometry.name]
+
+        # 掩膜 → 二值 → 去重叠
+        binm = _mask_logits_to_binary(masks, thresh=mask_thresh)
+        binm = masks_non_overlapping(binm, scores)
+
+        # 逐实例矢量化 + 裁到目标多边形
+        for i in range(binm.shape[0]):
+            s_i = float(scores[i]) if not np.isnan(scores[i]) else 0.0
+            if s_i < score_thresh:
+                continue
+            bi = binm[i].astype(np.uint8)
+            if bi.sum() < min_pixels:
+                continue
+            bi = _erode_if_needed(bi, iters=erode_iter)
+            polys = _vectorize_single_mask(
+                bi, transform=transform,
+                min_pixels=min_pixels,
+                simplify_ratio=simplify_ratio,
+                hw=binm.shape[-2:]
+            )
+            if not polys:
+                continue
+
+            for g_poly in polys:
+                inter = g_poly.intersection(target_geom)
+                if inter.is_empty:
+                    continue
+                geoms = [inter] if inter.geom_type == "Polygon" else list(inter.geoms)
+                for g in geoms:
+                    if g.is_empty:
+                        continue
+                    records_fields.append({
+                        "polygon_id": polygon_id,
+                        "instance": int(i),
+                        "score": s_i,
+                        "src_pt": os.path.basename(path),
+                        "geometry": g
+                    })
+                    boundary = g.boundary
+                    if boundary.is_empty:
+                        continue
+                    if boundary.geom_type == "MultiLineString":
+                        for seg in boundary.geoms:
+                            records_bounds.append({
+                                "polygon_id": polygon_id,
+                                "instance": int(i),
+                                "score": s_i,
+                                "src_pt": os.path.basename(path),
+                                "geometry": seg
+                            })
+                    elif boundary.geom_type == "LineString":
+                        records_bounds.append({
+                            "polygon_id": polygon_id,
+                            "instance": int(i),
+                            "score": s_i,
+                            "src_pt": os.path.basename(path),
+                            "geometry": boundary
+                        })
+
+        print(f"[OK] {pi}/{len(files)} 处理完 {os.path.basename(path)} → {polygon_id}")
+
+    if not records_fields:
+        raise RuntimeError("[Result] 没有生成任何 field polygon。检查阈值/匹配。")
+
+    gdf_fields = gpd.GeoDataFrame(records_fields, crs=out_crs)
+    gdf_bounds = gpd.GeoDataFrame(records_bounds, crs=out_crs)
+
+    # 按 polygon_id 分 gpkg 输出
+    for pid, sub_f in gdf_fields.groupby("polygon_id"):
+        sub_b = gdf_bounds[gdf_bounds["polygon_id"] == pid]
+        out_path = _ensure_gpkg_path(out_dir, pid)
+        sub_f.to_file(out_path, driver="GPKG", layer="fields")
+        if len(sub_b):
+            sub_b.to_file(out_path, driver="GPKG", layer="boundaries")
+        print(f"[Write] {pid}: {out_path} (fields={len(sub_f)}, boundaries={len(sub_b)})")
+
+    return True
+
+# ----------------------------
+# 合并多个 GPKG → 一个 merged.gpkg（fields_all + boundaries_all）
+# ----------------------------
+def _read_layer_safe(path, layer):
+    try:
+        return gpd.read_file(path, layer=layer)
+    except Exception:
+        return None
+
+def _union_columns(gdfs):
+    cols = set()
+    for g in gdfs:
+        if g is None or g.empty:
+            continue
+        cols.update([c for c in g.columns if c != g.geometry.name])
+    cols = list(cols)
+    out = []
+    for g in gdfs:
+        if g is None or g.empty:
+            continue
+        miss = [c for c in cols if c not in g.columns]
+        for c in miss:
+            g[c] = pd.NA
+        out.append(g[[*cols, g.geometry.name]])
+    return out, cols
+
+def merge_gpkgs(out_dir, out_merged, target_crs=None):
+    gpkg_files = sorted(glob.glob(os.path.join(out_dir, "*.gpkg")))
+    if not gpkg_files:
+        raise FileNotFoundError(f"No .gpkg in {out_dir}")
+
+    fields_list, bounds_list = [], []
+    crs_target = None
+
+    for p in gpkg_files:
+        gf = _read_layer_safe(p, "fields")
+        gb = _read_layer_safe(p, "boundaries")
+        if gf is not None and not gf.empty:
+            gf = gf.copy(); gf["src_gpkg"] = os.path.basename(p); fields_list.append(gf)
+        if gb is not None and not gb.empty:
+            gb = gb.copy(); gb["src_gpkg"] = os.path.basename(p); bounds_list.append(gb)
+
+    if not fields_list and not bounds_list:
+        raise RuntimeError("No layers found to merge.")
+
+    if target_crs is not None:
+        crs_target = CRS.from_user_input(target_crs)
+    else:
+        for g in (fields_list + bounds_list):
+            if g is not None and g.crs is not None:
+                crs_target = CRS.from_user_input(g.crs); break
+        if crs_target is None:
+            crs_target = CRS.from_user_input("EPSG:4326")
+            print("[WARN] All inputs missing CRS; default to EPSG:4326")
+
+    def _to_target(g):
+        if g is None or g.empty:
+            return g
+        if g.crs is None:
+            return g.set_crs(crs_target, allow_override=True)
+        if CRS.from_user_input(g.crs) != crs_target:
+            return g.to_crs(crs_target)
+        return g
+
+    fields_list = [_to_target(g) for g in fields_list]
+    bounds_list = [_to_target(g) for g in bounds_list]
+    fields_list, _ = _union_columns(fields_list)
+    bounds_list, _ = _union_columns(bounds_list)
+
+    gdf_fields_all = gpd.GeoDataFrame(pd.concat(fields_list, ignore_index=True), crs=crs_target) if fields_list else None
+    gdf_bounds_all = gpd.GeoDataFrame(pd.concat(bounds_list, ignore_index=True), crs=crs_target) if bounds_list else None
+
+    if os.path.exists(out_merged):
+        try: os.remove(out_merged)
+        except Exception: pass
+
+    if gdf_fields_all is not None and not gdf_fields_all.empty:
+        gdf_fields_all.to_file(out_merged, driver="GPKG", layer="fields_all")
+        print(f"[Write] fields_all: {len(gdf_fields_all)} features")
+    if gdf_bounds_all is not None and not gdf_bounds_all.empty:
+        gdf_bounds_all.to_file(out_merged, driver="GPKG", layer="boundaries_all")
+        print(f"[Write] boundaries_all: {len(gdf_bounds_all)} features")
+
+    print(f"[OK] merged → {out_merged} | CRS={crs_target}")
+    return out_merged
+
+# ----------------------------
+# 一键入口（给 main.py 用）
+# ----------------------------
+def run_postprocessing(
+    pred_dir: str,
+    cad_source: str,
+    layer_name: Optional[str],
+    id_field: str,
+    out_dir: str,
+    img_root: Optional[str],
+    mask_thresh: float = 0.7,
+    erode_iter: int = 1,
+    min_pixels: int = 20,
+    simplify_ratio: float = 0.002,
+    score_thresh: float = 0.65,
+    target_crs: Optional[str] = None,
+    merged_out_dir: Optional[str] = None,     # 新增：合并结果单独目录（如 final_result）
+    merged_filename: str = "merged.gpkg",     # 新增：合并文件名
+):
+    # 1) 读 cadastre
+    cad_gdf = _load_cadastre(cad_source, layer_name, id_field)
+    print(f"[Cadastre] 加载 {len(cad_gdf)} 个 target polygon；CRS={cad_gdf.crs}")
+
+    # 2) 逐图写出单个 GPKG（fields/boundaries 两图层）
+    ok = postprocess_predictions_to_gpkg(
+        pred_dir=pred_dir,
+        cad_gdf=cad_gdf,
+        out_dir=out_dir,
+        id_field=id_field,
+        img_root=img_root,
+        mask_thresh=mask_thresh,
+        erode_iter=erode_iter,
+        min_pixels=min_pixels,
+        simplify_ratio=simplify_ratio,
+        score_thresh=score_thresh,
+    )
+    if not ok:
+        raise RuntimeError("Postprocess failed to generate polygons.")
+
+    # 3) 合并所有 GPKG 到一个 merged.gpkg（可放到单独目录）
+    merged_base_dir = merged_out_dir or out_dir
+    os.makedirs(merged_base_dir, exist_ok=True)
+    merged_path = os.path.join(merged_base_dir, merged_filename)
+    merged_path = merge_gpkgs(out_dir, merged_path, target_crs=target_crs)
+
+    return {"out_dir": out_dir, "merged": merged_path}
+
+

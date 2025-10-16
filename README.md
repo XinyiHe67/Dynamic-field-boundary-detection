@@ -89,6 +89,9 @@ pip install -U shapely
 pip install -U opencv-python
 pip install -U geopandas fiona pyproj rtree
 pip install -U scikit-learn
+pip install -U earthengine-api
+pip install -U earthengine-api geemap
+pip install -U geedim
 ~~~
 ⚠️ <mark>Please make sure that your NVIDIA GeForce driver is ≥ 550.</mark>
 
