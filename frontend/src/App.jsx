@@ -142,13 +142,30 @@ function UsePage() {
   const canDownload = status === 'done' && (gpkgUrl || jobId);
 
   function handlePickFile(file) {
+    if (!file) return;
+
+    // File type whitelist
+    const allowedTypes = ['image/tiff', 'image/tif', 'image/png', 'image/jpeg'];
+
+    // Check file type
+    if (!allowedTypes.includes(file.type)) {
+      setCoordError(
+        'Format not supported, please upload GeoTIFF, JPEG or PNG images.'
+      );
+      setSelectedFile(null);
+      setUploadPreviewUrl(null);
+      return;
+    }
+
+    // Clean up old preview
     if (uploadPreviewUrl && uploadPreviewUrl.startsWith('blob:')) {
       URL.revokeObjectURL(uploadPreviewUrl);
     }
-    setSelectedFile(file || null);
-    setUploadPreviewUrl(
-      file?.type?.startsWith('image/') ? URL.createObjectURL(file) : null
-    );
+
+    // Set file and preview
+    setSelectedFile(file);
+    setUploadPreviewUrl(URL.createObjectURL(file));
+    setCoordError(''); // Clear old error
   }
 
   function validateCoords() {
