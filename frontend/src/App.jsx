@@ -588,7 +588,7 @@ function UsePage() {
               </div>
             )}
 
-            <div className="grid grid-cols-2 gap-3">
+            <div className="mt-3 grid grid-cols-2 gap-3">
               <div>
                 <label className="text-xs text-slate-600">Start Date</label>
                 <input
