@@ -300,6 +300,9 @@ function UsePage() {
     setResultUrl(null);
     setGpkgUrl(null);
     setJobId(null);
+    const formatDate = dateStr => new Date(dateStr).toISOString().split('T')[0];
+    const startDateStr = formatDate(startDate);
+    const endDateStr = formatDate(endDate);
 
     // 启动“假进度条动画”，让用户看到加载过程
     const t = setInterval(() => {
@@ -316,8 +319,8 @@ function UsePage() {
           minLat,
           maxLon,
           maxLat,
-          startDate,
-          endDate,
+          startDate: startDateStr,
+          endDate: endDateStr,
         };
         response = await fetch(`${BASE_URL}/api/s2-process`, {
           method: 'POST',
