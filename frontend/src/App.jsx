@@ -114,6 +114,9 @@ function UsePage() {
   const [maxLon, setMaxLon] = useState('146.55');
   const [maxLat, setMaxLat] = useState('-33.95');
 
+  const [startDate, setStartDate] = useState('');
+  const [endDate, setEndDate] = useState('');
+
   const [coordError, setCoordError] = useState(''); // ✅ 统一错误提示
 
   const [selectedFile, setSelectedFile] = useState(null);
@@ -122,6 +125,9 @@ function UsePage() {
   const [resultUrl, setResultUrl] = useState(null);
   const [status, setStatus] = useState('idle');
   const [progress, setProgress] = useState(0);
+
+  const [fieldCount, setFieldCount] = useState(null);
+  const [fieldArea, setFieldArea] = useState(null);
 
   // —— 下载所需
   const [gpkgUrl, setGpkgUrl] = useState(null); // 后端返回的 .gpkg 直链
@@ -142,30 +148,17 @@ function UsePage() {
   const canDownload = status === 'done' && (gpkgUrl || jobId);
 
   function handlePickFile(file) {
-    if (!file) return;
-
-    // File type whitelist
-    const allowedTypes = ['image/tiff', 'image/tif', 'image/png', 'image/jpeg'];
-
-    // Check file type
-    if (!allowedTypes.includes(file.type)) {
-      setCoordError(
-        'Format not supported, please upload GeoTIFF, JPEG or PNG images.'
-      );
-      setSelectedFile(null);
-      setUploadPreviewUrl(null);
+    if (!file.type.startsWith('image/')) {
+      setCoordError('Only image files are supported.');
       return;
     }
-
-    // Clean up old preview
     if (uploadPreviewUrl && uploadPreviewUrl.startsWith('blob:')) {
       URL.revokeObjectURL(uploadPreviewUrl);
     }
-
-    // Set file and preview
-    setSelectedFile(file);
-    setUploadPreviewUrl(URL.createObjectURL(file));
-    setCoordError(''); // Clear old error
+    setSelectedFile(file || null);
+    setUploadPreviewUrl(
+      file?.type?.startsWith('image/') ? URL.createObjectURL(file) : null
+    );
   }
 
   function validateCoords() {
@@ -198,7 +191,84 @@ function UsePage() {
     return '';
   }
 
-  function handleSubmit() {
+  /**
+   * ===================================================
+   * handleSubmit() — 触发边界检测任务
+   * ===================================================
+   * 前端提交用户输入（坐标或图片 + 时间范围），
+   * 向后端发起请求，后端执行边界检测并返回结果。
+   *
+   * =============================
+   * Request (前端 → 后端)
+   * =============================
+   * - 根据 tab 不同，调用不同的接口：
+   *
+   * 1. By Coordinates 模式:
+   *    POST /api/s2-process
+   *    Content-Type: application/json
+   *    Body:
+   *    {
+   *      "minLon": 146.15,     // 最小经度
+   *      "minLat": -34.25,     // 最小纬度
+   *      "maxLon": 146.55,     // 最大经度
+   *      "maxLat": -33.95,     // 最大纬度
+   *      "startDate": "2024-06-01", // 起始时间 (YYYY-MM-DD)
+   *      "endDate": "2024-09-01"    // 结束时间 (YYYY-MM-DD)
+   *    }
+   *
+   * 2. By Image 模式:
+   *    POST /api/s2-upload
+   *    Content-Type: multipart/form-data
+   *    Body:
+   *    - "file": 上传的影像文件 (.tif / .png / .jpg)
+   *    - "startDate": 起始日期
+   *    - "endDate": 结束日期
+   *
+   * =============================
+   * Response (后端 → 前端)
+   * =============================
+   * 成功 (HTTP 200):
+   * {
+   *   "previewUrl": "http://localhost:5000/outputs/example.png", // 预览图片 URL
+   *   "gpkgUrl": "http://localhost:5000/downloads/result_001.gpkg", // 可下载的 GPKG 链接
+   *   "gpkgName": "result_001.gpkg",   // 可选，文件名
+   *   "jobId": "abc123",               // 可选，用于异步任务下载
+   *   "fieldCount": 12,                // 检测出的农田数量
+   *   "fieldArea": 45.8                // 总面积 (ha)
+   * }
+   *
+   * 失败 (HTTP 4xx / 5xx):
+   * {
+   *   "error": "Invalid input" 或 "Internal Server Error"
+   * }
+   *
+   * =============================
+   * 后端接口判断逻辑建议
+   * =============================
+   * - 后端可以根据请求的 Content-Type 自动判断：
+   *   - 若 Content-Type = "application/json" → 处理坐标请求；
+   *   - 若 Content-Type = "multipart/form-data" → 处理图像上传请求。
+   *
+   *   例如在 Flask 或 FastAPI 中：
+   *   ```
+   *   if request.content_type.startswith("application/json"):
+   *       data = request.json
+   *       # 处理坐标模式
+   *   elif request.content_type.startswith("multipart/form-data"):
+   *       file = request.files["file"]
+   *       # 处理影像模式
+   *   ```
+   *
+   * =============================
+   * 前端执行流程
+   * =============================
+   * 1. 验证输入合法性（坐标、时间范围）
+   * 2. 设置加载状态与进度条
+   * 3. 根据模式发送请求 (JSON / FormData)
+   * 4. 等待后端返回结果，更新预览、统计信息、下载链接
+   * 5. 若失败，显示错误提示
+   */
+  async function handleSubmit() {
     setCoordError('');
 
     if (tab === 'coords') {
@@ -208,27 +278,102 @@ function UsePage() {
         return;
       }
     }
+
+    if (!startDate || !endDate) {
+      setCoordError('Please select both start date and end date.');
+      return;
+    }
+
+    const start = new Date(startDate);
+    const end = new Date(endDate);
+    if (isNaN(start) || isNaN(end)) {
+      setCoordError('Invalid date format.');
+      return;
+    }
+
+    if (start >= end) {
+      setCoordError('Start date must be earlier than end date.');
+      return;
+    }
     setStatus('running');
     setProgress(0);
     setResultUrl(null);
     setGpkgUrl(null);
     setJobId(null);
 
+    // 启动“假进度条动画”，让用户看到加载过程
     const t = setInterval(() => {
-      setProgress(p => {
-        const next = p + Math.random() * 12;
-        if (next >= 100) {
-          clearInterval(t);
-          setProgress(100);
-          setStatus('done');
-          setResultUrl('/example-result.png');
-          // TODO: 后端就绪后任选一种方式提供下载来源：
-          // setGpkgUrl("https://YOUR_SERVER/path/to/result.gpkg"); // 方式1：直链
-          // setJobId("YOUR_JOB_ID");                               // 方式2：用 jobId 走 /api/job/:id/download
-        }
-        return Math.min(next, 100);
-      });
-    }, 420);
+      setProgress(p => Math.min(p + Math.random() * 10, 95)); // 先最多到95%
+    }, 400);
+
+    try {
+      // === 调后端接口（预留位置） ===
+      let response;
+
+      if (tab === 'coords') {
+        const body = {
+          minLon,
+          minLat,
+          maxLon,
+          maxLat,
+          startDate,
+          endDate,
+        };
+        response = await fetch(`${BASE_URL}/api/s2-process`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(body),
+        });
+      } else {
+        const formData = new FormData();
+        formData.append('file', selectedFile);
+        formData.append('startDate', startDate);
+        formData.append('endDate', endDate);
+        response = await fetch(`${BASE_URL}/api/s2-upload`, {
+          method: 'POST',
+          body: formData,
+        });
+      }
+
+      if (!response.ok) throw new Error(`HTTP ${response.status}`);
+      const data = await response.json();
+
+      // === 成功后，结束动画并设置结果 ===
+      clearInterval(t);
+      setProgress(100);
+      setStatus('done');
+      setResultUrl(data.previewUrl || '/example-result.png');
+      if (data.gpkgUrl) setGpkgUrl(data.gpkgUrl);
+      if (data.jobId) setJobId(data.jobId);
+      if (data.gpkgName) setGpkgName(data.gpkgName);
+      if (data.fieldCount) setFieldCount(data.fieldCount || 0);
+      if (data.fieldArea) setFieldArea(data.fieldArea || 0);
+    } catch (err) {
+      console.error(err);
+      clearInterval(t);
+      setCoordError('Failed to connect to backend.');
+      setStatus('idle');
+      setProgress(0);
+      setResultUrl(null);
+      setFieldCount(null);
+      setFieldArea(null);
+    }
+
+    // const t = setInterval(() => {
+    //   setProgress(p => {
+    //     const next = p + Math.random() * 12;
+    //     if (next >= 100) {
+    //       clearInterval(t);
+    //       setProgress(100);
+    //       setStatus('done');
+    //       setResultUrl('/example-result.png');
+    //       // TODO: 后端就绪后任选一种方式提供下载来源：
+    //       // setGpkgUrl("https://YOUR_SERVER/path/to/result.gpkg"); // 方式1：直链
+    //       // setJobId("YOUR_JOB_ID");                               // 方式2：用 jobId 走 /api/job/:id/download
+    //     }
+    //     return Math.min(next, 100);
+    //   });
+    // }, 420);
   }
 
   // —— 下载逻辑
@@ -378,6 +523,29 @@ function UsePage() {
               <div
                 className="mt-1 w-full rounded-xl border-2 border-dashed border-slate-300 bg-slate-50 hover:bg-slate-100 flex flex-col gap-3 items-center justify-start p-4 cursor-pointer transition"
                 onClick={() => document.getElementById('fileInput').click()}
+                onDragOver={e => {
+                  e.preventDefault();
+                  e.stopPropagation();
+                  e.currentTarget.classList.add('border-sky-400', 'bg-sky-50');
+                }}
+                onDragLeave={e => {
+                  e.preventDefault();
+                  e.stopPropagation();
+                  e.currentTarget.classList.remove(
+                    'border-sky-400',
+                    'bg-sky-50'
+                  );
+                }}
+                onDrop={e => {
+                  e.preventDefault();
+                  e.stopPropagation();
+                  e.currentTarget.classList.remove(
+                    'border-sky-400',
+                    'bg-sky-50'
+                  );
+                  const file = e.dataTransfer.files?.[0];
+                  if (file) handlePickFile(file);
+                }}
               >
                 <div
                   className="w-full rounded-lg bg-white border border-slate-200 shadow-sm overflow-auto"
@@ -416,6 +584,27 @@ function UsePage() {
                 />
               </div>
             )}
+
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <label className="text-xs text-slate-600">Start Date</label>
+                <input
+                  type="date"
+                  value={startDate}
+                  onChange={e => setStartDate(e.target.value)}
+                  className="mt-1 w-full rounded-xl border border-slate-300 px-3 py-2 text-sm"
+                />
+              </div>
+              <div>
+                <label className="text-xs text-slate-600">End Date</label>
+                <input
+                  type="date"
+                  value={endDate}
+                  onChange={e => setEndDate(e.target.value)}
+                  className="mt-1 w-full rounded-xl border border-slate-300 px-3 py-2 text-sm"
+                />
+              </div>
+            </div>
 
             <button
               onClick={handleSubmit}
@@ -478,6 +667,23 @@ function UsePage() {
                 </div>
               )}
             </div>
+            {status === 'done' && (
+              <div className="mt-4 border-t border-slate-200 pt-4">
+                <h3 className="text-sm font-medium text-slate-800 mb-2">
+                  Field Statistics
+                </h3>
+                <div className="text-sm text-slate-600 space-y-1">
+                  <p>
+                    Number of Fields:{' '}
+                    <span className="font-semibold">{fieldCount ?? '-'}</span>
+                  </p>
+                  <p>
+                    Total Area:{' '}
+                    <span className="font-semibold">{fieldArea ?? '-'} ha</span>
+                  </p>
+                </div>
+              </div>
+            )}
 
             <div className="flex justify-center mt-4">
               <button
