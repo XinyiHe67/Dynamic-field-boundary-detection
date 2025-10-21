@@ -132,7 +132,6 @@ function UsePage() {
   // —— 下载所需
   const [gpkgUrl, setGpkgUrl] = useState(null); // 后端返回的 .gpkg 直链
   const [gpkgName, setGpkgName] = useState('result.gpkg');
-  const [jobId, setJobId] = useState(null); // 或使用 jobId 走下载接口
 
   // 使用页卡片布局
   const leftCardMinH =
@@ -145,7 +144,7 @@ function UsePage() {
     tab === 'coords' ? 'min(34vh, 340px)' : 'min(27vh, 280px)';
 
   // 可下载条件
-  const canDownload = status === 'done' && (gpkgUrl || jobId);
+  const canDownload = status === 'done' && gpkgUrl;
 
   function handlePickFile(file) {
     if (!file.type.startsWith('image/')) {
@@ -232,7 +231,6 @@ function UsePage() {
    *   "previewUrl": "http://localhost:5000/outputs/example.png", // 预览图片 URL
    *   "gpkgUrl": "http://localhost:5000/downloads/result_001.gpkg", // 可下载的 GPKG 链接
    *   "gpkgName": "result_001.gpkg",   // 可选，文件名
-   *   "jobId": "abc123",               // 可选，用于异步任务下载
    *   "fieldCount": 12,                // 检测出的农田数量
    *   "fieldArea": 45.8                // 总面积 (ha)
    * }
@@ -305,7 +303,6 @@ function UsePage() {
     setProgress(0);
     setResultUrl(null);
     setGpkgUrl(null);
-    setJobId(null);
 
     // 启动“假进度条动画”，让用户看到加载过程
     const t = setInterval(() => {
@@ -350,7 +347,6 @@ function UsePage() {
       setStatus('done');
       setResultUrl(data.previewUrl || '/example-result.png');
       if (data.gpkgUrl) setGpkgUrl(data.gpkgUrl);
-      if (data.jobId) setJobId(data.jobId);
       if (data.gpkgName) setGpkgName(data.gpkgName);
       if (data.fieldCount) setFieldCount(data.fieldCount || 0);
       if (data.fieldArea) setFieldArea(data.fieldArea || 0);
@@ -375,7 +371,6 @@ function UsePage() {
     //       setResultUrl('/example-result.png');
     //       // TODO: 后端就绪后任选一种方式提供下载来源：
     //       // setGpkgUrl("https://YOUR_SERVER/path/to/result.gpkg"); // 方式1：直链
-    //       // setJobId("YOUR_JOB_ID");                               // 方式2：用 jobId 走 /api/job/:id/download
     //     }
     //     return Math.min(next, 100);
     //   });
@@ -395,29 +390,6 @@ function UsePage() {
       a.click();
       a.remove();
       return;
-    }
-
-    // 方式2：通过 jobId 调后端下载接口
-    if (jobId) {
-      try {
-        const resp = await fetch(ENDPOINTS.jobDownload(jobId), {
-          method: 'GET',
-        });
-        if (!resp.ok) throw new Error(`Download failed: ${resp.status}`);
-        const blob = await resp.blob();
-        const url = URL.createObjectURL(blob);
-        const a = document.createElement('a');
-        a.href = url;
-        a.download = gpkgName || 'result.gpkg';
-        document.body.appendChild(a);
-        a.click();
-        a.remove();
-        URL.revokeObjectURL(url);
-        return;
-      } catch (e) {
-        console.error(e);
-        alert('下载失败：请检查后端 /api/job/:id/download 是否可用。');
-      }
     }
   }
 
