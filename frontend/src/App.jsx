@@ -3,7 +3,7 @@ import { useState } from 'react';
 /* ===================================================
    后端接口配置
    =================================================== */
-const BASE_URL = 'http://localhost:5000';
+const BASE_URL = 'http://127.0.0.1:5000';
 const ENDPOINTS = {
   processArea: `${BASE_URL}/api/process-area`,
   processImage: `${BASE_URL}/api/process-image`,
@@ -114,10 +114,10 @@ function UsePage() {
   const [maxLon, setMaxLon] = useState('146.55');
   const [maxLat, setMaxLat] = useState('-33.95');
 
-  const [startDate, setStartDate] = useState('');
-  const [endDate, setEndDate] = useState('');
+  const [startDate, setStartDate] = useState('2024-06-01');
+  const [endDate, setEndDate] = useState('2024-09-01');
 
-  const [coordError, setCoordError] = useState(''); // ✅ 统一错误提示
+  const [coordError, setCoordError] = useState(''); // 统一错误提示
 
   const [selectedFile, setSelectedFile] = useState(null);
   const [uploadPreviewUrl, setUploadPreviewUrl] = useState(null);
@@ -277,6 +277,11 @@ function UsePage() {
         setCoordError(errorMsg);
         return;
       }
+    } else {
+      if (!selectedFile) {
+        setCoordError('Please select an image file before submitting.');
+        return;
+      }
     }
 
     if (!startDate || !endDate) {
@@ -295,14 +300,12 @@ function UsePage() {
       setCoordError('Start date must be earlier than end date.');
       return;
     }
+
     setStatus('running');
     setProgress(0);
     setResultUrl(null);
     setGpkgUrl(null);
     setJobId(null);
-    const formatDate = dateStr => new Date(dateStr).toISOString().split('T')[0];
-    const startDateStr = formatDate(startDate);
-    const endDateStr = formatDate(endDate);
 
     // 启动“假进度条动画”，让用户看到加载过程
     const t = setInterval(() => {
@@ -319,8 +322,8 @@ function UsePage() {
           minLat,
           maxLon,
           maxLat,
-          startDate: startDateStr,
-          endDate: endDateStr,
+          startDate,
+          endDate,
         };
         response = await fetch(`${BASE_URL}/api/s2-process`, {
           method: 'POST',
