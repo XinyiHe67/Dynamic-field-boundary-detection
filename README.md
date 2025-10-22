@@ -92,6 +92,9 @@ pip install -U scikit-learn
 pip install -U earthengine-api
 pip install -U earthengine-api geemap
 pip install -U geedim
+pip install -U openpyxl
+pip install -U fastapi uvicorn
+pip install -U python-multipart
 ~~~
 ⚠️ <mark>Please make sure that your NVIDIA GeForce driver is ≥ 550.</mark>
 

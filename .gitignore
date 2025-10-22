@@ -1,9 +1,7 @@
 # 忽略所有层级的 checkpoints
 **/checkpoints/
 #（可选）忽略数据与运行产物
-model/Dataset/
-runs/model/Mask-R-CNN-new.ipynb
-model/Mask-R-CNN-new.ipynb
-model/Target_polygon/
+backend/modules/model/Dataset/
+backend/modules/model/Target_polygon/
 runs/
-model/cs88-468908-d6ce3af55bb8.json
+backend/modules/model/cs88-468908-d6ce3af55bb8.json
