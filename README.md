@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="assets/logo.png" alt="Dynamic Field Boundary Detection Engine" width="300">
+  <img src="./backend/modules/assets/logo.png" alt="Dynamic Field Boundary Detection Engine" width="300">
 </p>
 <h1 align="center">🌾 Dynamic Farmland Boundary Detection Engine</h1>
 
@@ -40,7 +40,7 @@ This project develops an automated system for detecting dynamic sub-field bounda
 
 ## 📊 Model Architecture
 <p align="center">
-  <img src="assets/structure.png" width="60%">
+  <img src="./backend/modules/assets/structure.png" width="60%">
 </p>
 
 > Loss Function: A weighted BCE + Dice composite loss, combining classification, regression, and segmentation objectives for better boundary accuracy.
@@ -106,14 +106,14 @@ Please install on your local machine first: **VS Code** and the extensions **Rem
 
 Click on your Remote Resource Manager and add the new ssh.
 <p align="center">
-  <img src="assets/add_ssh.png" width="500">
+  <img src="./backend/modules/assets/add_ssh.png" width="500">
 </p>
 Then input: ssh -p 43265 root@region-9.autodl.pro and press the enter.
 
 Then enter the first row as follows:
 
 <p align="center">
-  <img src="assets/ssh_configuration.png" width="400">
+  <img src="./backend/modules/assets/ssh_configuration.png" width="400">
 </p>
 
 📝 **Tip:** Choose your user SSH configuration file, e.g.  
@@ -121,18 +121,18 @@ Then enter the first row as follows:
 
 Then please open your SSH configuration file which is stored in the `C:\Users\<username>\.ssh\config` and add the identity key in your configuration file as follows:
 <p align="center">
-  <img src="assets/config.png" width="400">
+  <img src="./backend/modules/assets/config.png" width="400">
 </p>
 
 Then we can open the new window to connect the ssh (you can also connect the ssh in the current windows if you have the local files).
 <p align="center">
-  <img src="assets/new_windows.png" width="400">
+  <img src="./backend/modules/assets/new_windows.png" width="400">
 </p>
 Then choose the Linux operating system and input the password: y3ZoCSWGGfZw in the new window.
 Now we can open the folder in this new window and input the password again.
 Currently, we can use this new window(which connects the Autodl) to run our code.
 <p align="center">
-  <img src="assets/complete.png" width="600">
+  <img src="./backend/modules/assets/complete.png" width="600">
 </p>
 
 
@@ -141,6 +141,6 @@ Currently, we can use this new window(which connects the Autodl) to run our code
 
 | Input Patch | Detected Sub-field | Outlined Boundaries |
 |:---:|:---:|:---:|
-| <img src="assets/input_patch.png" width="300"> | <img src="assets/detected_subfield.png" width="320"> | <img src="assets/outlined_boundaries.png" width="300"> |
+| <img src="./backend/modules/assets/input_patch.png" width="300"> | <img src="./backend/modules/assets/detected_subfield.png" width="320"> | <img src="./backend/modules/assets/outlined_boundaries.png" width="300"> |
 
 
