@@ -142,44 +142,14 @@ def build_and_visualize_s2_rgb8_exact(roi_geom,
 # ============================
 # 2) DynamicWorld 选地块
 # ============================
-def select_polygons_by_farmland_ratio(cadastre_asset_id: str,
+def select_polygons_in_roi(cadastre_asset_id: str,
                                       roi_geom,
-                                      dw_start: str,
-                                      dw_end: str,
-                                      farmland_th: float,
                                       id_col: str):
-    """
-    用 DynamicWorld 估算 ROI 内地块的“农地占比”，返回筛选后的要素与 id 列表。
-    farmland 类别：4=cropland, 7=grass
-    """
+    
     cadastre_fc = ee.FeatureCollection(cadastre_asset_id)
     cad_in_roi = cadastre_fc.filterBounds(roi_geom)
-
-    dw = (ee.ImageCollection('GOOGLE/DYNAMICWORLD/V1')
-          .filterDate(dw_start, dw_end)
-          .filterBounds(cad_in_roi.geometry())
-          .select('label'))
-
-    farmland = (dw.map(lambda img: img.eq(4).Or(img.eq(7)))
-                  .reduce(ee.Reducer.max())
-                  .rename('farmland'))
-
-    def attach_ratio(poly):
-        geom = poly.geometry()
-        farmland_in = farmland.clip(geom)
-        farmland_pixels = farmland_in.eq(1).rename('farmland')
-        stats = farmland_pixels.reduceRegion(
-            reducer=ee.Reducer.mean(),   # 均值 = 占比
-            geometry=geom,
-            scale=10,
-            maxPixels=1e9
-        )
-        return poly.set('farmland_ratio', ee.Number(stats.get('farmland')))
-
-    with_ratio = cad_in_roi.map(attach_ratio)
-    selected = with_ratio.filter(ee.Filter.gte('farmland_ratio', farmland_th))
-    id_list = selected.aggregate_array(id_col)
-    return selected, id_list
+    id_list = cad_in_roi.aggregate_array(id_col)
+    return cad_in_roi, id_list
 
 
 # ===== NEW: ROI 构造器（bbox / tif 两种模式） =====
@@ -321,12 +291,6 @@ def run_gee_fetch(
     """
     ee_init_from_json(json_path=json_path)
 
-    # DW 时间窗默认等于 S2 时间窗
-    if not dw_start:
-        dw_start = s2_start
-    if not dw_end:
-        dw_end = s2_end
-
     # ===== CHANGED: 统一通过 ROI 构造器生成 roi / export_region =====
     roi, export_region, roi_info = make_rois(
         roi_mode=roi_mode,
@@ -351,8 +315,8 @@ def run_gee_fetch(
         print(f"[CRS] 输出：{crs_out_val} | 外扩：{pad_m} m")
 
     # 选地块 & 写 id 列表（保持原逻辑）
-    selected_polys, ids = select_polygons_by_farmland_ratio(
-        cadastre_asset, roi, dw_start, dw_end, farmland_th, id_col
+    selected_polys, ids = select_polygons_in_roi(
+        cadastre_asset_id=cadastre_asset, roi_geom=roi, id_col=id_col
     )
     id_list_py = ids.getInfo()
     print(f"[IDs] 命中 {len(id_list_py)} 个地块 | 前10：{id_list_py[:10]}")

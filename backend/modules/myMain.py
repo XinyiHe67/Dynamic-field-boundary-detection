@@ -133,11 +133,11 @@ def parse_args():
 
     # --- Postprocessing params ---
     p.add_argument("--pred_dir", default="./modules/runs/predictions")
-    p.add_argument("--cad_source", default="./modules/model/Target_polygon")      # 可为目录或 .gpkg
-    p.add_argument("--layer_name", default=None)                    # 多图层 gpkg 时指定
+    p.add_argument("--cad_source", default="./modules/model/Target_polygon")      
+    p.add_argument("--layer_name", default=None)                  
     p.add_argument("--cad_id_field", default="OBJECTID")
     p.add_argument("--post_out_dir", default="./modules/post_outputs")
-    p.add_argument("--img_root", default=None)                      # 若 .pt 无 meta，提供 tif 根目录
+    p.add_argument("--img_root", default=None)                     
     p.add_argument("--mask_thresh", type=float, default=0.7)
     p.add_argument("--erode_iter", type=int, default=1)
     p.add_argument("--min_pixels", type=int, default=20)
@@ -259,9 +259,6 @@ def main():
         if _dt.date.fromisoformat(s2_start) > _dt.date.fromisoformat(s2_end):
             print("Start date is later than end date, swapping them.")
             s2_start, s2_end = s2_end, s2_start
-        # DW 时间窗与 S2 对齐
-        dw_start = s2_start
-        dw_end   = s2_end
         # ========= 分支：bbox 模式 =========
         if args.roi_mode == "bbox":
             if not args.gee_bbox:
@@ -276,8 +273,6 @@ def main():
                 s2_start=s2_start,
                 s2_end=s2_end,
                 cloud_max=args.gee_cloud_max,
-                dw_start=dw_start,  # 若有 DW 独立时间窗就替换
-                dw_end=dw_end,
                 farmland_th=args.gee_farmland_th,
                 out_tif=args.gee_out_tif,
                 out_ids=args.gee_out_ids,
@@ -300,8 +295,6 @@ def main():
                 s2_start=s2_start,               # 仅用于 DynamicWorld 时间窗
                 s2_end=s2_end,
                 cloud_max=args.gee_cloud_max,
-                dw_start=dw_start,
-                dw_end=dw_end,
                 farmland_th=args.gee_farmland_th,
                 out_ids=args.gee_out_ids,        # 这个参数 image_input 可能忽略；用 results['ids'] 兜底
                 user_tif=args.user_tif
@@ -556,6 +549,7 @@ def main():
             "./modules/runs/predictions",
             "./modules/model/InferenceDataset",
             "./modules/model/Preprocess_Target_polygon",
+            "./model/InferenceDataset"
         ]
 
         print("\n==== [Clean-up] Removing temporary folders ====")

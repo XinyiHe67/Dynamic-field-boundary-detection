@@ -1,7 +1,7 @@
 import { useState } from 'react';
 
 /* ===================================================
-   后端接口配置
+   Back-end interface configuration
    =================================================== */
 const BASE_URL = 'http://127.0.0.1:5000';
 const ENDPOINTS = {

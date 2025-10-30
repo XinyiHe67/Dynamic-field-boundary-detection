@@ -1,6 +1,35 @@
+# ==== Core backend ====
 fastapi
 uvicorn
 pydantic
 python-multipart
+
+# ==== Data processing ====
 pandas
 openpyxl
+numpy
+
+# ==== Geo & spatial ====
+geopandas
+fiona
+pyproj
+rasterio
+shapely
+rtree
+
+# ==== Machine learning & computer vision ====
+torch==2.8.0+cu129
+torchvision==0.23.0+cu129
+torchaudio
+scikit-learn
+pillow
+matplotlib
+opencv-python
+
+# ==== Google Earth Engine & Geospatial tools ====
+earthengine-api
+geemap
+geedim
+
+# ==== Utility ====
+python-multipart
