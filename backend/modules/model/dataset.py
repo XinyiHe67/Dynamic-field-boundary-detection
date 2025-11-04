@@ -47,11 +47,14 @@ def _load_xanylabeling_json(json_path: str) -> Dict[str, Any]:
 
 class GeoPatchDataset(Dataset):
     """
-    读取 GeoTIFF (.tif) + X-anylabeling (.json)
-    - 用 rasterio 读像素（默认取 1,2,3 波段），归一化到 0~1，得到 (C,H,W) float32
-    - target 结构与 Mask R-CNN 兼容，并额外返回 target["meta"] = {crs, transform, height, width, path}
+    Dataset for reading GeoTIFF (.tif) + X-AnyLabeling (.json) polygon annotations.
+
+    - Uses rasterio to read pixel data (by default bands 1, 2, 3), normalizes to [0, 1],
+      resulting in a float32 tensor of shape (C, H, W).
+    - The target structure is compatible with Mask R-CNN and additionally includes
+      target["meta"] = {crs, transform, height, width, path}.
     """
-    def __init__(self, img_dir, ann_dir, samples=None,  # ← 改：samples 可为 None
+    def __init__(self, img_dir, ann_dir, samples=None,   # Note: samples can be None
                  bands=(1,2,3), use_single_class=True, ignore_empty=False):
         self.img_dir = img_dir
         self.ann_dir = ann_dir
@@ -60,7 +63,7 @@ class GeoPatchDataset(Dataset):
         self.ignore_empty = ignore_empty
 
         if samples is None:
-            # 自动配对同名 .tif/.tiff 与 .json
+            # Automatically pair .tif/.tiff and .json files with the same basename
             tifs = [f for f in os.listdir(img_dir) if f.lower().endswith((".tif", ".tiff"))]
             base2img = {os.path.splitext(f)[0]: f for f in tifs}
             jsons = [f for f in os.listdir(ann_dir) if f.lower().endswith(".json")]
@@ -82,11 +85,11 @@ class GeoPatchDataset(Dataset):
         ip = os.path.join(self.img_dir, img_name)
         jp = os.path.join(self.ann_dir, json_name)
 
-        # --- 用 rasterio 读取像素 + 地理元数据 ---
+        # --- Read pixels and geospatial metadata using rasterio ---
         with rasterio.open(ip) as src:
             bands = tuple(b for b in self.bands if 1 <= b <= src.count)
             arr = src.read(bands).astype(np.float32)    # (C,H,W)
-            if arr.max() > 1.5: arr = arr / 255.0       # 简单归一化
+            if arr.max() > 1.5: arr = arr / 255.0       # Simple normalization
             H, W = src.height, src.width
             meta = {
                 "crs": src.crs,
@@ -97,7 +100,7 @@ class GeoPatchDataset(Dataset):
             }
         image_tensor = torch.from_numpy(arr)            # (C,H,W), float32
 
-        # --- 读 JSON 多边形 -> 栅格 ---
+        # --- Read polygons from JSON and rasterize them into masks ---
         data = _load_xanylabeling_json(jp)
         shapes = data.get("shapes", [])
         polygons, labels = [], []
@@ -113,7 +116,7 @@ class GeoPatchDataset(Dataset):
             polygons.append(clipped)
             labels.append(1 if self.use_single_class else 1)
 
-        # --- 组装 target ---
+        # --- Build target dictionary ---
         if len(polygons) == 0:
             if self.ignore_empty:
                 return self.__getitem__((idx + 1) % len(self))
@@ -151,13 +154,15 @@ class GeoPatchDataset(Dataset):
             "image_id": torch.tensor([idx], dtype=torch.int64),
             "area": torch.as_tensor(areas, dtype=torch.float32),
             "iscrowd": torch.as_tensor(iscrowd, dtype=torch.int64),
-            "meta": meta,                                        # ✅ 关键信息
+            "meta": meta,                                        
         }
         return image_tensor, target
     def get_sample_info(self, idx: int):
         """
-        兼容 DatasetSplitter.save_split_info 的查询接口。
-        返回至少包含 'image_name'（你的保存函数会用到）。
+        Interface compatible with DatasetSplitter.save_split_info.
+
+        Returns at least:
+            - 'image_name' (used by the save function)
         """
         img_name, json_name = self.samples[idx]
         return {
@@ -400,7 +405,9 @@ class DataConfig:
     random_seed: int = 42
 
 def build_loaders(cfg: DataConfig):
-    # 直接调用你已有的 create_split_datasets（最小改动）
+    """
+    Build PyTorch DataLoaders for train/val/test using create_split_datasets.
+    """
     train_ds, val_ds, test_ds = create_split_datasets(
         img_dir=cfg.img_dir,
         ann_dir=cfg.ann_dir,
