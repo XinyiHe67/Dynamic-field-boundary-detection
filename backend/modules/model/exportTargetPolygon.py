@@ -10,19 +10,19 @@ except Exception:
     HAS_PYOGRIO = False
 
 
-# ===================== 配置部分 =====================
-PATCH_DIR = Path("./modules/model/InferenceDataset")          # 你的 patch 文件夹路径
-IN_GPKG = Path("./modules/gee_out/filter_lot.gpkg")
-LAYER_NAME = "filter_lot"                         # GPKG 图层名
-OUT_DIR = Path(__file__).resolve().parent.parent / "./model/Preprocess_Target_polygon"    # 输出文件夹
-ID_COL = "OBJECTID"                                     # GPKG 里代表目标ID的列名
+# ===================== Configuration =====================
+PATCH_DIR = Path("./modules/model/InferenceDataset")                                      # Directory containing patch files
+IN_GPKG = Path("./modules/gee_out/filter_lot.gpkg")                                       # Input GPKG file
+LAYER_NAME = "filter_lot"                                                                 # GPKG layer name
+OUT_DIR = Path(__file__).resolve().parent.parent / "./model/Preprocess_Target_polygon"    # Output directory
+ID_COL = "OBJECTID"                                                                       # Column name representing target ID in GPKG
 # ====================================================
 
 def guess_id_col(cols, user_id=None):
     if user_id and user_id in cols: return user_id
     for c in ["objectID","OBJECTID","ObjectID","object_id","id","ID"]:
         if c in cols: return c
-    raise ValueError(f"未找到 objectID 列，可选列有：{list(cols)}")
+    raise ValueError(f"ID column not found. Available columns: {list(cols)}")
 
 def extract_id_from_name(name: str):
     base = os.path.basename(name)
@@ -39,8 +39,9 @@ def collect_ids_from_dir(patch_dir: Path):
                 ids.append(str(oid))
     ids = sorted(set(ids))
     if not ids:
-        raise RuntimeError("未在目录中解析到任何 objectID，请检查文件命名是否类似 patch_<ID>_*.tif")
-    print(f"[INFO] 收集到 {len(ids)} 个唯一 objectID：{ids[:8]}{' ...' if len(ids)>8 else ''}")
+        raise RuntimeError("No object IDs were parsed from the directory. "
+                           "Please check that filenames look like patch_<ID>_*.tif")
+    print(f"[INFO] Collected {len(ids)} unique object IDs: {ids[:8]}{' ...' if len(ids)>8 else ''}")
     return ids
 
 def sanitize_filename(s: str) -> str:
@@ -59,35 +60,36 @@ def export_split_by_id():
     if HAS_PYOGRIO:
         head = pyogrio.read_dataframe(IN_GPKG, layer=LAYER_NAME, max_features=5)
         id_col = guess_id_col(head.columns, ID_COL)
-        print(f"[INFO] 使用 pyogrio 流式读取，ID列={id_col}")
+        print(f"[INFO] Using pyogrio for streaming read, ID column = {id_col}")
 
         for oid in ids:
-            oid_safe = oid.replace("'", "''")  # 先替换单引号，防止 SQL 注入
+            # Escape single quotes to avoid SQL injection issues
+            oid_safe = oid.replace("'", "''")  
             where = f"{id_col} = '{oid_safe}'"
             sub = pyogrio.read_dataframe(IN_GPKG, layer=LAYER_NAME, where=where)
             if sub.empty:
-                print(f"[WARN] ID {oid} 未找到，跳过。")
+                print(f"[WARN] ID {oid} not found, skipped.")
                 continue
             sub = fix_geometry_if_needed(sub)
             out_path = OUT_DIR / f"{sanitize_filename(oid)}.gpkg"
             pyogrio.write_dataframe(sub, out_path, layer="polygon", driver="GPKG")
-            print(f"[OK] 写出 {out_path} (要素数={len(sub)})")
+            print(f"[OK] Wrote {out_path} (features={len(sub)})")
     else:
-        print("[INFO] 未安装 pyogrio，使用 geopandas 一次性读取。")
+        print("[INFO] pyogrio not installed, using geopandas full read.")
         gdf = gpd.read_file(IN_GPKG, layer=LAYER_NAME)
         id_col = guess_id_col(gdf.columns, ID_COL)
         gdf[id_col] = gdf[id_col].astype(str)
         subset = gdf[gdf[id_col].isin(set(ids))].copy()
         if subset.empty:
-            raise RuntimeError("筛选结果为空，未找到匹配的ID。")
+            raise RuntimeError("Filtered result is empty, no matching IDs found.")
         subset = fix_geometry_if_needed(subset)
 
         for oid, sub in subset.groupby(id_col):
             out_path = OUT_DIR / f"{sanitize_filename(oid)}.gpkg"
             sub.to_file(out_path, layer="polygon", driver="GPKG")
-            print(f"[OK] 写出 {out_path} (要素数={len(sub)})")
+            print(f"[OK] Wrote {out_path} (features={len(sub)})")
 
-    print("[DONE] 全部完成 ")
+    print("[DONE] All exports completed. ")
 
 
 if __name__ == "__main__":
