@@ -1,6 +1,6 @@
-# 忽略所有层级的 checkpoints
+# ignore all checkpoints
 **/checkpoints/
-#（可选）忽略数据与运行产物
+# (Optional) Ignore data and runtime artifacts
 backend/modules/model/Dataset/
 backend/modules/model/Target_polygon/
 runs/
