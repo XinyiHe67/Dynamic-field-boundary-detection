@@ -26,16 +26,13 @@ def run_command(command, cwd=None):
 
 def open_new_terminal(command, cwd):
     """Open a new terminal window and run a command (Windows/macOS/Linux).
-       - 在 VS Code 集成终端里：就在当前终端面板中启动（可见输出）
-       - 在普通终端里：弹出新窗口运行
     """
     sysname = platform.system()
     cwd_str = str(cwd)
 
-    # 如果在 VS Code 集成终端中，直接在当前面板里启动，让输出可见
+    # If you launch the VS Code integrated terminal directly from the current panel, the output will be visible
     if os.environ.get("TERM_PROGRAM", "").lower() == "vscode":
         if sysname == "Windows":
-            # 继承当前控制台，在同一面板输出；非阻塞
             subprocess.Popen(command, cwd=cwd_str, shell=True)
         elif sysname == "Darwin":
             subprocess.Popen(f'cd "{cwd_str}" && {command}', cwd=cwd_str, shell=True, executable="/bin/bash")
@@ -43,14 +40,14 @@ def open_new_terminal(command, cwd):
             subprocess.Popen(f'cd "{cwd_str}" && {command}', cwd=cwd_str, shell=True)
         return
 
-    # 非 VS Code：走“新窗口”逻辑
+    # Non-VS Code: New Window
     if sysname == "Windows":
-        # 强制新控制台，不依赖 start；窗口会保留（cmd /k）
+        # Force a new console, without relying on start
         creationflags = getattr(subprocess, "CREATE_NEW_CONSOLE", 0x00000010)
         cmdline = f'cd /d "{cwd_str}" && {command}'
         subprocess.Popen(["cmd.exe", "/k", cmdline], creationflags=creationflags)
     elif sysname == "Darwin":
-        # macOS：AppleScript 打开 Terminal
+        # macOS：AppleScript open Terminal
         full_cmd = f'cd "{cwd_str}" && {command}'
         apple_script = f'''
         tell application "Terminal"
@@ -60,7 +57,7 @@ def open_new_terminal(command, cwd):
         '''
         subprocess.run(["osascript", "-e", apple_script])
     else:
-        # Linux：尝试常见终端；找不到则退回当前窗口后台运行
+        # Linux：Try common terminals; if none are found, return to the current window and run in the background
         term = (
             shutil.which("x-terminal-emulator")
             or shutil.which("gnome-terminal")
@@ -79,7 +76,7 @@ def open_new_terminal(command, cwd):
         elif term:
             subprocess.Popen([term, "-e", f'bash -lc \'cd "{cwd_str}" && {command}; exec bash\''])
         else:
-            # 无 GUI 终端可用：在当前窗口后台跑
+            # No GUI terminal available: Runs in the background of the current window
             subprocess.Popen(f'cd "{cwd_str}" && {command}', cwd=cwd_str, shell=True)
 
 
@@ -124,10 +121,9 @@ def main():
     else:
         print("No backend/requirements.txt found. Skipping backend installation.")
 
-    # 5. Start backend and frontend in new terminals / current VS Code终端
+    # 5. Start backend and frontend in new terminals / current VS Code Terminal
     print("\n[5/6] Starting backend and frontend servers ...")
 
-    # ⚠️ 给 Python 路径加引号，防止将来路径含空格
     backend_cmd = f"\"{sys.executable}\" -m uvicorn app:app --reload --port 5000"
     frontend_cmd = "npm run dev"
 
