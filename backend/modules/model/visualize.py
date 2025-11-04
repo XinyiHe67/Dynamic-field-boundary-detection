@@ -5,14 +5,14 @@ import torch
 import matplotlib.pyplot as plt
 import matplotlib.patches as patches
 
-# 可选依赖：OpenCV 用于边界渲染（没有也能跑）
+
 try:
     import cv2
     _HAS_CV2 = True
 except Exception:
     _HAS_CV2 = False
 
-# === 工具 ===
+# === Utilities ===
 def tensor_to_uint8_img(img_tensor):
     """(C,H,W) tensor -> (H,W,3) uint8 RGB"""
     if isinstance(img_tensor, torch.Tensor):
@@ -27,7 +27,7 @@ def tensor_to_uint8_img(img_tensor):
     return np.clip(img, 0, 255).astype(np.uint8)
 
 def _stem_from_target(tgt: Dict[str, Any], fallback: str) -> str:
-    """根据目标里的 meta.path 或 image_id 生成文件名 stem"""
+    """Generate filename stem from target meta.path or image_id"""
     meta = tgt.get("meta", {})
     p = meta.get("path", None)
     if p:
@@ -39,18 +39,18 @@ def _stem_from_target(tgt: Dict[str, Any], fallback: str) -> str:
 
 def _resolve_class_names(loader) -> Dict[int, str]:
     base = loader.dataset
-    while hasattr(base, "dataset"):  # 兼容 Subset
+    while hasattr(base, "dataset"):  # Handle torch.utils.data.Subset wrappers
         base = base.dataset
     if hasattr(base, "classes"):
         names = list(getattr(base, "classes"))
         return {0: "__background__", **{i+1: n for i, n in enumerate(names)}}
     return {0: "__background__", 1: "field"}
 
-# === 你的两种可视化写法：叠加半透明 mask / 只画边界 ===
+# === Two visualization modes: overlay semi-transparent masks / draw only boundaries ===
 def render_side_by_side(img_tensor, pred, class_names: dict,
                         score_thresh: float = 0.5, title: str = "Prediction",
                         save_path: Optional[str] = None, show: bool = False):
-    """左原图、右预测（半透明 mask + bbox + label）——和你 notebook 里的效果一致"""
+    """Left: input image; right: prediction (semi-transparent mask + bbox + label), matching the notebook visualization."""
     img = img_tensor.detach().cpu().float()
     if img.max() > 1.5:
         img = img / 255.0
@@ -100,7 +100,7 @@ def render_side_by_side(img_tensor, pred, class_names: dict,
 def draw_boundaries_on_image(img_rgb, masks, scores,
                              score_thresh=0.5, prob_thresh=0.5,
                              color=(255,0,0), thickness=2):
-    """只画边界的版本（用 OpenCV 轮廓）"""
+    """Boundary-only visualization using OpenCV contours."""
     vis_rgb = img_rgb.copy()
     if isinstance(masks, torch.Tensor):
         masks = masks.detach().cpu().float().numpy()
@@ -132,7 +132,7 @@ def draw_boundaries_on_image(img_rgb, masks, scores,
 
 def save_boundaries_png(img_tensor, pred, save_path: str,
                         score_thresh=0.5, prob_thresh=0.5, color=(255,0,0), thickness=2):
-    """把“边界叠加图”直接存 PNG"""
+    """Save boundary-overlay visualization directly as PNG."""
     rgb = tensor_to_uint8_img(img_tensor)
     masks = pred.get("masks", torch.empty(0))
     scores = pred.get("scores", torch.empty(0))
@@ -141,7 +141,7 @@ def save_boundaries_png(img_tensor, pred, save_path: str,
     plt.figure(figsize=(7,7)); plt.imshow(vis); plt.axis("off")
     plt.savefig(save_path, bbox_inches="tight", dpi=150); plt.close()
 
-# === 批量可视化入口：加载模型->跑 loader->保存图片 ===
+# === Batch visualization entrypoint: load model -> run loader -> save images ===
 def predict_and_save_pngs(test_loader,
                           ckpt_path: str,
                           out_dir: str,
@@ -149,7 +149,7 @@ def predict_and_save_pngs(test_loader,
                           score_thresh: float = 0.5,
                           mode: str = "side_by_side"):
     """
-    mode: "side_by_side" 用 render_side_by_side；"boundary" 用边界图
+    mode: "side_by_side" uses render_side_by_side; "boundary" uses boundary-overlay visualization.
     """
     from model.engine import pick_device_and_amp
     from model.maskrcnn import build_model_with_custom_loss
