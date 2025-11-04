@@ -1,4 +1,3 @@
-# 放到 model/postprocessing.py 末尾（或新建 model/visualize.py）
 import matplotlib.pyplot as plt
 import geopandas as gpd
 import rasterio
@@ -17,17 +16,16 @@ def visualize_overlay_window(
     figsize=(10, 10),
 ):
     """
-    直接弹窗预览：底图为 GeoTIFF，叠加 GPKG 面/线，不保存PNG。
-    - geotiff_path: 例如 'gee_out/S2_RGB8.tif'
-    - gpkg_path:    例如 'final_result/merged.gpkg' 或单个 id 的 .gpkg
+    Quick visualization utility — display a GeoTIFF base image overlaid with
+    vector data from a GPKG file (no PNG saving).
     """
-    # 1) 打开影像
+    # 1) Open GeoTIFF and display as base map
     with rasterio.open(geotiff_path) as src:
         rcrs = src.crs
         fig, ax = plt.subplots(figsize=figsize)
-        rio_show(src, ax=ax, alpha=alpha_image)  # 自动按 transform 显示
+        rio_show(src, ax=ax, alpha=alpha_image)  # Automatically uses the raster transform for correct georeferencing
 
-    # 2) 读取并叠加图层（先尝试 *_all，再尝试单图层名）
+    # 2) Read and overlay vector layers (try *_all first, fallback to single layer name)
     def _read_first_ok(path, names):
         for nm in names:
             try:
@@ -39,11 +37,12 @@ def visualize_overlay_window(
     gdf_fields = _read_first_ok(gpkg_path, layer_candidates_fields)
     gdf_bounds = _read_first_ok(gpkg_path, layer_candidates_bounds)
 
+    # Reproject vector layers to match raster CRS if needed
     def _to_raster_crs(gdf):
         if gdf is None or gdf.empty:
             return gdf
         if gdf.crs is None:
-            # 如果缺CRS，直接设为影像CRS以保证能画（保守做法）
+            # If CRS is missing, assume the same as the raster (safe fallback)
             return gdf.set_crs(rcrs, allow_override=True)
         if CRS.from_user_input(gdf.crs) != CRS.from_user_input(rcrs):
             return gdf.to_crs(rcrs)
@@ -52,7 +51,7 @@ def visualize_overlay_window(
     gdf_fields = _to_raster_crs(gdf_fields)
     gdf_bounds = _to_raster_crs(gdf_bounds)
 
-    # 3) 绘制矢量（只画边界，不填充）
+    # 3) Plot vector overlays (outline only, no fill)
     if gdf_fields is not None and not gdf_fields.empty:
         gdf_fields.plot(ax=ax, facecolor="none", edgecolor=edgecolor_fields, linewidth=linewidth)
     if gdf_bounds is not None and not gdf_bounds.empty:
@@ -61,5 +60,5 @@ def visualize_overlay_window(
     ax.set_title("Overlay preview (TIFF + GPKG)")
     ax.set_aspect("equal")
     plt.tight_layout()
-    plt.show()  # ← 不保存，直接弹窗
+    plt.show() 
 

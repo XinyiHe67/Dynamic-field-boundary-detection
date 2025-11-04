@@ -3,9 +3,9 @@ from torchvision.models.detection import maskrcnn_resnet50_fpn
 from torchvision.models.detection.faster_rcnn import FastRCNNPredictor
 from torchvision.models.detection.mask_rcnn import MaskRCNNPredictor
 
-# ============================================
-# 1. 自定义损失函数
-# ============================================
+# ============================
+# 1. Custom loss functions
+# ============================
 
 class DiceLoss(nn.Module):
     """Dice Loss for segmentation masks"""
@@ -88,9 +88,9 @@ class BoxIoULoss(nn.Module):
             return 1 - giou.mean()
 
 
-# ============================================
-# 2. 自定义 Mask R-CNN with Custom Losses
-# ============================================
+# ====================================================
+# 2. Custom Mask R-CNN wrapper with loss scaling
+# ====================================================
 
 class CustomMaskRCNN(nn.Module):
     """Wrapper around Mask R-CNN with custom loss functions"""

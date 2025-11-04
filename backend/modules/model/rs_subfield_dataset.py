@@ -19,7 +19,7 @@ class RSSubfieldDataset(Dataset):
             pts = np.array(poly_xy, dtype=np.float32).reshape(-1, 1, 2)
             cv2.fillPoly(m, [pts.astype(np.int32)], 1)
             return m
-        # 兜底：纯 shapely（慢）
+        # Fallback: pure shapely implementation (slow)
         poly = Polygon(poly_xy)
         yy, xx = np.indices((H, W))
         coords = np.stack([xx.ravel(), yy.ravel()], axis=1)

@@ -7,7 +7,7 @@ from model.maskrcnn import build_model_with_custom_loss
 
 def _resolve_class_names(test_loader) -> Dict[int, str]:
     base = test_loader.dataset
-    while hasattr(base, "dataset"):   # 兼容 Subset
+    while hasattr(base, "dataset"):   # Support torch.utils.data.Subset
         base = base.dataset
     if hasattr(base, "classes"):
         names = list(getattr(base, "classes"))
@@ -21,7 +21,10 @@ def _load_ckpt(model, ckpt_path: str):
     model.load_state_dict(state, strict=False)
 
 def _stem_from_target(tgt: Dict[str, Any], fallback: str) -> str:
-    # 尽力从 meta.path 拿文件名；没有就用 image_id
+    """
+    Try to derive a filename stem from target['meta']['path'];
+    if not available, fall back to image_id or the provided fallback.
+    """
     meta = tgt.get("meta", {})
     p = meta.get("path", None)
     if p:
@@ -57,7 +60,7 @@ def _save_one(out_dir: str, stem: str, pred: Dict[str, Any],
                    for k, v in item.items() if k not in ("class_names", "meta")}
         path = os.path.join(out_dir, f"{stem}.npz")
         np.savez_compressed(path, **np_item)
-        # 同名保存 meta 与 class_names
+        # Save meta and class_names in a sidecar JSON file
         with open(os.path.join(out_dir, f"{stem}.meta.json"), "w", encoding="utf-8") as f:
             import json
             json.dump({"class_names": class_names, "meta": item["meta"]}, f, ensure_ascii=False, indent=2)
@@ -69,8 +72,14 @@ def predict_dataset(test_loader,
                     out_format: str = "pt",
                     use_pretrained: bool = False) -> Dict[str, Any]:
     """
-    对整个 test_loader 进行推理，并把**每张图**的预测保存到磁盘。
-    返回 {'num_items': N, 'sample_paths': [...], 'class_names': {...}}
+    Run inference on the entire test_loader and save predictions for each image to disk.
+
+    Returns:
+        {
+          "num_items": N,
+          "sample_paths": [...],
+          "class_names": {...}
+        }
     """
     device, _ = pick_device_and_amp()
     class_names = _resolve_class_names(test_loader)

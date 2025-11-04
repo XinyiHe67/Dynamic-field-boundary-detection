@@ -18,7 +18,7 @@ if device.type == "cpu":
     torch.set_num_threads(4)
 
 # ============================================
-# 4. Training Functions (same as before but with custom model)
+# Training Functions
 # ============================================
 
 def optimize_batch_data(images, targets, device):
@@ -157,7 +157,6 @@ def fit_maskrcnn(
     debug_mode: bool = True,
     accumulate_grad_batches: int = 2,
     warmup_epochs: int = 1,
-    # New parameters for custom loss
     mask_loss_weight: float = 2.0,
     box_loss_weight: float = 1.0,
     use_dice_loss: bool = True,

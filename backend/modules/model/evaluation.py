@@ -8,24 +8,25 @@ import pandas as pd
 from sklearn.metrics import precision_score, recall_score, f1_score
 
 
-# =============== 单图评估（像素级） ===============
+# =============== Single-image evaluation (pixel-wise) ===============
 def evaluate_single_image(
     gt_masks,                      # (M,H,W) torch/numpy
     pred_masks,                    # (N,H,W) torch/numpy
 ) -> Dict[str, Any]:
     """
-    把多实例掩膜合成前景二值图，计算 Precision / Recall / F1 / IoU / Dice。
+    Merge instance masks into a single binary foreground map and compute:
+    Precision / Recall / F1 / IoU / Dice.
     """
     if isinstance(gt_masks, torch.Tensor):
         gt_masks = gt_masks.detach().cpu().numpy()
     if isinstance(pred_masks, torch.Tensor):
         pred_masks = pred_masks.detach().cpu().numpy()
 
-    # 合并实例为语义前景
+    # Merge instance masks into semantic foreground
     gt   = (gt_masks.sum(0)  > 0).astype(np.uint8) if gt_masks.size  else 0
     pred = (pred_masks.sum(0) > 0).astype(np.uint8) if pred_masks.size else 0
 
-    # 兼容无 GT 情况
+    # Handle case with no GT
     if isinstance(gt, int):
         if isinstance(pred, int):
             return {"Precision":0.0,"Recall":0.0,"F1_score":0.0,"IoU":0.0,"Dice":0.0}
@@ -51,18 +52,20 @@ def evaluate_single_image(
     }
 
 
-# =============== 整个 DataLoader 评估（在线推断） ===============
+# =============== Whole-dataloader evaluation (online inference) ===============
 def evaluate_dataset(
     model: torch.nn.Module,
     data_loader,
     device: torch.device,
     score_thresh: float = 0.5,
-    iou_match_thr: float = 0.5,    # 预留参数，占位不影响现有逻辑
-    boundary_tol: int = 3,         # 预留参数，占位不影响现有逻辑
+    iou_match_thr: float = 0.5,   
+    boundary_tol: int = 3,        
     save_csv: Optional[str] = None,
 ) -> Tuple[pd.DataFrame, Dict[str, Any]]:
     """
-    遍历 data_loader：前向 -> 取预测 masks（按 score_thresh 过滤）-> 与 GT 计算指标。
+    Iterate over data_loader:
+    forward pass -> extract predicted masks (filtered by score_thresh) ->
+    compute metrics against GT.
     """
     model.eval()
     results: List[Dict[str, Any]] = []
@@ -73,7 +76,7 @@ def evaluate_dataset(
             outputs = model(images)
 
             for i, (pred, tgt) in enumerate(zip(outputs, targets)):
-                # 预测 masks
+                # Predicted masks
                 masks = pred.get("masks", torch.empty(0))
                 if isinstance(masks, torch.Tensor):
                     if masks.ndim == 4 and masks.shape[1] == 1:
@@ -99,7 +102,7 @@ def evaluate_dataset(
 
                 rep = evaluate_single_image(gt_masks, pred_masks)
 
-                # 附带 image_id/path 便于回查
+                # Attach image_id/path for traceability
                 img_id = tgt.get("image_id", bidx * len(images) + i)
                 if torch.is_tensor(img_id):
                     try:
@@ -125,7 +128,7 @@ def evaluate_dataset(
     return df, summary
 
 
-# =============== 便捷入口：从 ckpt 加载后评估（与你 main.py 的调用一致） ===============
+# =============== Convenience entry: load from checkpoint and evaluate (for main.py) ===============
 def evaluate_from_checkpoint(
     test_loader,
     ckpt_path: str,
@@ -135,19 +138,21 @@ def evaluate_from_checkpoint(
     save_csv: Optional[str] = None,
 ):
     """
-    加载权重 -> 构建模型 -> 在 test_loader 上前向并评估 -> 返回 (df, summary)。
-    完全匹配 main.py 调用签名。
+    Load weights -> build model -> run inference and evaluation on test_loader
+    -> return (df, summary).
+
+    The function signature matches main.py.
     """
     from model.engine import pick_device_and_amp
     from model.maskrcnn import build_model_with_custom_loss
 
     device, _ = pick_device_and_amp()
 
-    # 推断类别数（背景 + N 类）
+    # Infer number of classes (background + N foreground classes)
     base = test_loader.dataset
-    while hasattr(base, "dataset"):  # 兼容 Subset
+    while hasattr(base, "dataset"):  
         base = base.dataset
-    # 如果你的数据集类名保存在 dataset.classes，中间件里已经这么做了
+
     n_classes = 1 + (len(getattr(base, "classes", ["field"])) or 1)
 
     model = build_model_with_custom_loss(num_classes=n_classes, use_pretrained=False)
