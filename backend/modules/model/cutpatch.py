@@ -113,7 +113,6 @@ def manifest() -> Tuple[str, int]:
     PAD_TO_FULL = False
 
     # ====== Prepare data ======
-    # from patch_generator import prepare_data, geom_bbox_px, write_patch  # 或直接放当前脚本
     src, gdf, transform, profile, shape = prepare_data(BIG_TIF, POLY_VEC, OUT_DIR)
     r_height, r_width = shape
 
