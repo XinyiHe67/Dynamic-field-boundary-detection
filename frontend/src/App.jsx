@@ -13,7 +13,7 @@ const ENDPOINTS = {
 };
 
 /* ============================
-   全局宽度修复
+   Global width fix
    ============================ */
 function GlobalWidthFix() {
   return (
@@ -30,7 +30,7 @@ function GlobalWidthFix() {
 }
 
 /* ============================
-   首页
+   Main Page
    ============================ */
 function HomePage() {
   return (
@@ -130,11 +130,10 @@ function UsePage() {
   const [xlsxUrl, setXlsxUrl] = useState(null);
   const [xlsxName, setXlsxName] = useState('result.xlsx');
 
-  // —— 下载所需
   const [gpkgUrl, setGpkgUrl] = useState(null);
   const [gpkgName, setGpkgName] = useState('result.gpkg');
 
-  // 使用页卡片布局
+  // Use page card layout
   const leftCardMinH =
     tab === 'coords' ? 'min(60vh, 640px)' : 'min(49vh, 500px)';
   const rightCardMinH =
@@ -144,7 +143,6 @@ function UsePage() {
   const resultPreviewH =
     tab === 'coords' ? 'min(34vh, 340px)' : 'min(27vh, 280px)';
 
-  // 可下载条件
   const canDownloadGpkg = status === 'done' && gpkgUrl;
   const canDownloadExcel = status === 'done' && xlsxUrl;
 
@@ -152,25 +150,21 @@ function UsePage() {
     if (!file) return;
     const name = file.name.toLowerCase();
 
-    // 只允许这几种类型
     if (!(name.endsWith('.tif') || name.endsWith('.tiff'))) {
       setCoordError('Unsupported file format.');
       return;
     }
-
-    // 清除之前的 blob 预览
+     
     if (uploadPreviewUrl && uploadPreviewUrl.startsWith('blob:')) {
       URL.revokeObjectURL(uploadPreviewUrl);
     }
 
-    // 对 .tif / .tiff 文件：不生成预览，只保存文件对象
     if (name.endsWith('.tif') || name.endsWith('.tiff')) {
       setSelectedFile(file);
       setUploadPreviewUrl(null);
       return;
     }
 
-    // 其它图片：正常生成预览
     setSelectedFile(file);
     setUploadPreviewUrl(URL.createObjectURL(file));
   }
@@ -237,7 +231,6 @@ function UsePage() {
       return;
     }
 
-    // 初始化状态
     setStatus('running');
     setProgress(0);
     setResultUrl(null);
@@ -246,8 +239,6 @@ function UsePage() {
     setTop5Data(null);
     setXlsxName(null);
     setGpkgName(null);
-
-    // 启动“假进度条动画”
     const t = setInterval(() => {
       setProgress(p => Math.min(p + Math.random() * 10, 95)); // 最多到 95%
     }, 400);
@@ -256,7 +247,6 @@ function UsePage() {
       let response;
 
       if (tab === 'coords') {
-        // 坐标模式：JSON 请求
         const body = {
           minLon,
           minLat,
@@ -271,7 +261,6 @@ function UsePage() {
           body: JSON.stringify(body),
         });
       } else {
-        // 上传模式：FormData 请求
         const formData = new FormData();
         formData.append('file', selectedFile);
         formData.append('startDate', startDate);
@@ -289,7 +278,6 @@ function UsePage() {
       setProgress(100);
       setStatus('done');
 
-      // ✅ 后端返回的字段
       if (data.previewUrl) setResultUrl(data.previewUrl);
       if (data.gpkgUrl) setGpkgUrl(data.gpkgUrl);
       if (data.gpkgName) setGpkgName(data.gpkgName);
@@ -312,11 +300,9 @@ function UsePage() {
     }
   }
 
-  // —— 下载逻辑
   async function handleDownloadGPKG() {
     if (!(status === 'done')) return;
 
-    // 方式1：已有直链 => 直接下载
     if (gpkgUrl) {
       const a = document.createElement('a');
       a.href = gpkgUrl;
@@ -328,11 +314,9 @@ function UsePage() {
     }
   }
 
-  // —— 下载逻辑
   async function handleDownloadExcel() {
     if (!(status === 'done')) return;
 
-    // 方式1：已有直链 => 直接下载
     if (xlsxUrl) {
       const a = document.createElement('a');
       a.href = xlsxUrl;
@@ -381,7 +365,6 @@ function UsePage() {
         </p>
 
         <div className="mt-8 grid grid-cols-1 xl:grid-cols-2 gap-6 w-full items-stretch">
-          {/* 左卡片 */}
           <div
             className="w-full rounded-2xl border border-slate-200 bg-white/90 p-6 shadow-md flex flex-col"
             style={{ minHeight: leftCardMinH }}
@@ -487,7 +470,6 @@ function UsePage() {
                       className="w-full h-full object-contain"
                     />
                   ) : selectedFile ? (
-                    // 如果是 TIF 文件，就显示提示文本，不渲染图片
                     selectedFile.name.toLowerCase().endsWith('.tif') ||
                     selectedFile.name.toLowerCase().endsWith('.tiff') ? (
                       <div className="h-full w-full flex flex-col items-center justify-center text-slate-600 text-sm">
@@ -497,7 +479,6 @@ function UsePage() {
                         </p>
                       </div>
                     ) : (
-                      // 否则提示默认内容
                       <div className="h-full w-full flex flex-col items-center justify-center text-slate-500">
                         <p className="text-sm">
                           Drag &amp; drop image (
@@ -607,7 +588,6 @@ function UsePage() {
             </div>
           </div>
 
-          {/* 右卡片 */}
           <div
             className="w-full rounded-2xl border border-slate-200 bg-white/90 p-6 shadow-md flex flex-col"
             style={{ minHeight: rightCardMinH }}
@@ -709,7 +689,7 @@ function UsePage() {
 }
 
 /* ============================
-   简易哈希路由
+   Simple Hash Routing
    ============================ */
 function useHashRoute() {
   const [route, setRoute] = useState(window.location.hash || '#/');
@@ -718,7 +698,7 @@ function useHashRoute() {
 }
 
 /* ============================
-   应用主入口
+   Main entree
    ============================ */
 export default function App() {
   const route = useHashRoute();

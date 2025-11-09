@@ -12,25 +12,25 @@ from typing import Callable, Tuple, List, Optional
 
 def prepare_data(tif_path: str, vector_path: str, output_dir: str):
     """
-    加载影像和矢量文件，确保CRS一致，并创建输出目录。
-    
-    返回：
-        - src: rasterio 数据源
-        - gdf: CRS对齐后的 GeoDataFrame
-        - transform: 仿射变换矩阵
+    Load raster and vector data, ensure CRS consistency, and create the output directory.
+
+    Returns:
+        - src: rasterio dataset source
+        - gdf: GeoDataFrame with CRS aligned to the raster
+        - transform: affine transformation matrix
         - profile: raster profile
-        - shape: (高度, 宽度)
+        - shape: (height, width)
     """
     os.makedirs(output_dir, exist_ok=True)
 
-    # 打开大图像
+    # Open the main raster image
     src = rasterio.open(tif_path)
     transform = src.transform
     profile = src.profile
     shape = (src.height, src.width)
     crs = src.crs
 
-    # 读取矢量图层
+    # Read vector layer
     gdf = gpd.read_file(vector_path)
     if gdf.crs is None:
         raise ValueError("No CRS found in vector file.")
@@ -41,6 +41,10 @@ def prepare_data(tif_path: str, vector_path: str, output_dir: str):
 
 
 def geom_bbox_px(geom, transform, shape, margin_px=0):
+    """
+    Compute the bounding box of a geometry in pixel coordinates.
+    Optionally extend the box by a given pixel margin.
+    """
     r_height, r_width = shape
     minx, miny, maxx, maxy = geom.bounds
     r0, c0 = rowcol(transform, minx, maxy)
@@ -63,6 +67,10 @@ def geom_bbox_px(geom, transform, shape, margin_px=0):
     return int(xmin), int(ymin), int(w), int(h)
 
 def write_patch(src, window, out_path, profile_base, pad_to_full=False):
+    """
+    Write a cropped image patch to disk based on the given window.
+    Optionally pad the patch to the full target size.
+    """
     win_w = int(window.width)
     win_h = int(window.height)
     data = src.read(window=window)
@@ -88,22 +96,23 @@ def write_patch(src, window, out_path, profile_base, pad_to_full=False):
 
 def manifest() -> Tuple[str, int]:
     """
-    主函数：不接受任何参数，内部自动加载路径、参数、数据，生成 patch 与 manifest.csv
+    Main function:
+    Loads paths, parameters, and data internally to generate image patches and a manifest.csv file.
     """
-    # ====== 路径配置（可按需修改） ======
+    # ====== Path configuration (modify as needed) ======
     BIG_TIF = "./modules/gee_out/S2_RGB8.tif"
     POLY_VEC = "./modules/gee_out/filter_lot.gpkg"
     OUT_DIR = "./modules/model/InferenceDataset"
     ID_FIELD = "OBJECTID"
 
-    # ====== Patch 生成参数 ======
+    # ====== Patch generation parameters ======
     PATCH_SMALL = 256
     PATCH_LARGE = 512
     TILE_OVERLAP = 256
     MARGIN_PX = 20
     PAD_TO_FULL = False
 
-    # ====== 准备数据 ======
+    # ====== Prepare data ======
     # from patch_generator import prepare_data, geom_bbox_px, write_patch  # 或直接放当前脚本
     src, gdf, transform, profile, shape = prepare_data(BIG_TIF, POLY_VEC, OUT_DIR)
     r_height, r_width = shape
@@ -119,7 +128,7 @@ def manifest() -> Tuple[str, int]:
     rows_written = 0
 
     if PATCH_LARGE <= TILE_OVERLAP:
-        raise ValueError("tile_overlap 必须小于 patch_large")
+        raise ValueError("tile_overlap must be smaller than patch_large")
 
     with open(manifest_path, "w", newline="", encoding="utf-8") as fcsv:
         writer = csv.writer(fcsv)

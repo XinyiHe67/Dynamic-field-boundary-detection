@@ -11,7 +11,7 @@ import sys, io, contextlib
 import pandas as pd
 import shutil
 
-# ====== FastAPI 基础 ======
+# ====== FastAPI Base ======
 app = FastAPI()
 
 # ====== CORS（把 127.0.0.1 也放进来）======
@@ -23,7 +23,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# ====== 目录准备：final_result 暴露为静态下载目录 ======
+# ====== Directory preparation: final_result is exposed as a static download directory ======
 BASE_DIR = Path(__file__).parent
 MODULES_DIR = BASE_DIR / "modules"
 FINAL_DIR = MODULES_DIR / "final_result"
@@ -31,12 +31,12 @@ FINAL_DIR.mkdir(parents=True, exist_ok=True)
 OUT_DIR = MODULES_DIR / "gee_out"
 app.mount("/static", StaticFiles(directory=str(FINAL_DIR)), name="static")
 
-# ====== 将 modules 加到 PYTHONPATH 并导入 myMain ======
+# ====== Add modules to PYTHONPATH and import myMain ======
 if str(MODULES_DIR) not in sys.path:
     sys.path.append(str(MODULES_DIR))
-from modules.myMain import main as run_pipeline  # 你复制过来的 myMain.main()
+from modules.myMain import main as run_pipeline 
 
-# ====== 前端坐标模式的请求体（你之前写了 S2Request 但没定义）======
+# ====== Request body in front-end coordinate mode ======
 class S2Request(BaseModel):
     minLon: float
     minLat: float
@@ -46,18 +46,18 @@ class S2Request(BaseModel):
     endDate: str     # "YYYY-MM-DD"
 
 
-# ====== 工具：跑 pipeline 并返回结果路径 ======
+# ====== Tool: Run a pipeline and return the result path ======
 def _run_and_pick_latest_gpkg(argv_list):
     """
-    运行完整 pipeline，并返回包含 3 个文件路径的字典：
+    Run the complete pipeline and return a dictionary containing the paths to three files：
     merged_gpkg, preview_png, field_summary_xlsx
     """
     sys.argv = ["myMain.py", *argv_list]
 
-    # 运行 pipeline（此时 run_pipeline = myMain.main）
-    result = run_pipeline()  # 🚀 它会返回一个字典
+    # Run pipeline(now run_pipeline = myMain.main)
+    result = run_pipeline() 
 
-    # 若 pipeline 没返回结果，则兜底从 final_result 中取最新文件
+    # If the pipeline does not return a result, then the latest file is retrieved from final_result as a fallback.
     if not result or not isinstance(result, dict):
         gpkg_list = sorted(FINAL_DIR.glob("merged_*.gpkg"),
                            key=lambda p: p.stat().st_mtime, reverse=True)
@@ -105,33 +105,29 @@ def _run_and_pick_latest_gpkg(argv_list):
     # return result
 
 # =========================
-# 1) 坐标模式（JSON）
+# 1) coordinate mode(JSON)
 # =========================
 @app.post("/api/s2-process")
 async def s2_process(req: S2Request):
-    """
-    前端传坐标 + 时间（JSON），运行 myMain，
-    并返回生成的 gpkg 与 png 的静态访问 URL。
-    """
     try:
         argv = [
-            "--mode", "auto",              # 一键流程
-            "--roi_mode", "bbox",          # 坐标模式
+            "--mode", "auto",              
+            "--roi_mode", "bbox",          
             "--gee_bbox", f"{req.minLon},{req.minLat},{req.maxLon},{req.maxLat}",
             "--gee_s2_start", req.startDate,
             "--gee_s2_end", req.endDate,
         ]
 
-        # 执行完整 pipeline
+        # Run the whole pipeline
         result = _run_and_pick_latest_gpkg(argv)
 
-        # 从返回的结果字典中取文件名
+        # Retrieve filenames from the returned result dictionary.
         gpkg_name = os.path.basename(result["merged_gpkg"])
         png_name = os.path.basename(result["preview_png"])
         xlsx_name = os.path.basename(result["field_summary_xlsx"])
         
 
-        # 拼成静态 URL
+        # Construct a static URL
         base_url = "http://127.0.0.1:5000/static"
         gpkg_url = f"{base_url}/{gpkg_name}"
         preview_url = f"{base_url}/{png_name}"
@@ -142,7 +138,7 @@ async def s2_process(req: S2Request):
         df = pd.read_excel(xlsx_path)
         top5 = df.head(5).to_dict(orient="records")
 
-        # 返回给前端
+        # Return to frontend
         return {
             "status": "done",
             "gpkgUrl": gpkg_url,
@@ -164,35 +160,26 @@ async def s2_upload(
     startDate: str = Form(...),
     endDate: str = Form(...),
 ):
-    """
-    前端上传 GeoTIFF 文件 + 时间范围，后端运行 myMain 的 tif 模式。
-    """
     try:
-        # 保存上传文件到临时路径
         upload_dir = Path(OUT_DIR)
         upload_dir.mkdir(parents=True, exist_ok=True)
-        # --- 新名字：S2_RGB8 + 原后缀（默认为 .tif） ---
+        # --- New name: S2_RGB8 + original suffix (default is .tif) ---
         ext = Path(file.filename).suffix or ".tif"
         new_filename = f"S2_RGB8{ext}"
         tif_path = upload_dir / new_filename
-        # === 真的把上传的内容写入磁盘（Windows/mac 都一样）===
 
         try:
-            file.file.seek(0)  # 保险：光标复位
+            file.file.seek(0) 
         except Exception:
             pass
         with open(tif_path, "wb") as f:
             shutil.copyfileobj(file.file, f)
         print(f"[SAVE] wrote tif to: {tif_path} | exists={tif_path.exists()}")
-        # ===============================================
-        # 目标是：tif_path 相对于 backend/modules/
         tif_abs = tif_path.resolve()
         modules_dir = Path(__file__).resolve().parent / "modules"
         relative_tif = tif_abs.relative_to(modules_dir) if tif_abs.is_relative_to(modules_dir) else tif_abs
         print(f"[UPLOAD] Received file: {tif_path}")
 
-        # === 新增：构造对管线稳定的相对路径（相对 backend 根），并统一斜杠 ===
-        # 如果 relative_tif 形如 "final_result/xxx.tif"，前面补上 "modules/"
         rel_for_pipeline = (
             ("modules" / relative_tif) if isinstance(relative_tif, Path) else Path("modules") / relative_tif
         ).as_posix() if not str(relative_tif).startswith(("modules/", "modules\\")) else Path(str(relative_tif)).as_posix()
@@ -212,29 +199,29 @@ async def s2_upload(
 
         print(argv)
 
-         # === 新增：在 backend 目录下运行，保证相对路径正确 ===
+         # === Run the program in the backend directory, ensuring the relative path is correct ===
         _backend_dir = Path(__file__).resolve().parent
         _old_cwd = Path.cwd()
         try:
             os.chdir(_backend_dir)
-            # 调用 pipeline（myMain.main）
+            # use pipeline（myMain.main）
             result = _run_and_pick_latest_gpkg(argv)
         finally:
             os.chdir(_old_cwd)
 
-        # 拿出结果文件名
+        # Retrieve the filename of the result
         gpkg_name = result["merged_gpkg"]
         png_name = result["preview_png"]
         xlsx_name = result["field_summary_xlsx"]
         xlsx_path = FINAL_DIR / xlsx_name
 
-        # 拼成 URL
+        # Construct a URL
         base_url = "http://127.0.0.1:5000/static"
         gpkg_url = f"{base_url}/{gpkg_name}"
         preview_url = f"{base_url}/{png_name}"
         xlsx_url = f"{base_url}/{xlsx_name}"
 
-        # 读出前五行统计
+        # Read the statistics of the first five lines
         df = pd.read_excel(xlsx_path)
         top5 = df.head(5).to_dict(orient="records")
         if tif_path.exists():
