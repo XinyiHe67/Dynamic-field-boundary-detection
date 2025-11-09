@@ -14,7 +14,7 @@ import shutil
 # ====== FastAPI Base ======
 app = FastAPI()
 
-# ====== CORS（把 127.0.0.1 也放进来）======
+# ====== CORS including 127.0.0.1======
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["http://localhost:5173"],
